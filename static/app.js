@@ -717,8 +717,20 @@ loginForm.addEventListener("submit", async (event) => {
 
     try {
         const { error } = await sb.auth.signInWithPassword({ email, password });
-        if (error) loginError.textContent = error.message;
+        if (error) {
+            console.error("Supabase sign-in failed", {
+                status: error.status ?? null,
+                code: error.code ?? null,
+                name: error.name ?? null,
+                message: error.message,
+            });
+            loginError.textContent = error.message;
+        }
     } catch (error) {
+        console.error("Supabase sign-in request failed", {
+            name: error.name ?? null,
+            message: error.message,
+        });
         loginError.textContent = errorMessage(error);
     }
 });

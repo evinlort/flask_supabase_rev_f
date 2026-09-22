@@ -13,7 +13,11 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
+from logging_config import configure_logging
+
 load_dotenv()
+
+logger = configure_logging("ai_mock_engine")
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
@@ -96,7 +100,7 @@ def run_cycle() -> None:
     for device in devices:
         assessment = build_mock_assessment(device["device_id"])
         supabase.table("ai_assessments").insert(assessment).execute()
-        print(f"AI MOCK {device['device_id']}: {assessment['diagnosis']}")
+        logger.info("AI MOCK %s: %s", device["device_id"], assessment["diagnosis"])
 
 
 def main() -> None:

@@ -2,6 +2,20 @@
 
 This version changes the previous simple sensor demo to match the supplied TLM data-flow diagram.
 
+## Logging
+
+The Flask app, station simulator, and optional mock AI engine share a rotating
+log file at:
+
+```text
+logs/app.log
+```
+
+The file keeps up to three 5 MB backups. Normal informational messages are
+stored in the file, while only errors are printed to the terminal. Successful
+telemetry packets are intentionally omitted because they are high-volume; command,
+startup, AI, and exception messages remain available in the log.
+
 ## What is implemented
 
 ### Station -> Supabase

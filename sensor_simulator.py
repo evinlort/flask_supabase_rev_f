@@ -8,7 +8,11 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
+from logging_config import configure_logging
+
 load_dotenv()
+
+logger = configure_logging("sensor_simulator")
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_PUBLIC_KEY = os.environ["SUPABASE_PUBLIC_KEY"]
@@ -133,7 +137,7 @@ def pull_and_process_command(station: StationRuntime) -> None:
         .execute()
     )
 
-    print(
+    logger.info(
         f"COMMAND {station.device_id}: {command['command_type']} -> {outcome}"
         + (f" ({reason})" if reason else "")
     )
@@ -171,7 +175,7 @@ def send_station_packet(station: StationRuntime) -> None:
     measured_at = datetime.now(timezone.utc).isoformat()
     telemetry = generate_telemetry(station)
 
-    response = (
+    (
         supabase.rpc(
             "ingest_station_packet",
             {
@@ -192,11 +196,8 @@ def send_station_packet(station: StationRuntime) -> None:
         .execute()
     )
 
-    print(
-        f"{measured_at} {station.device_id}: "
-        f"stored={response.data} safety={station.safety_ok} "
-        f"vfd={station.vfd_state} fault={station.fault_code or '-'}"
-    )
+    # Successful telemetry packets are intentionally not logged because they
+    # are high-volume and do not represent an actionable event.
 
 
 def run_cycle(stations: list[StationRuntime]) -> None:
@@ -205,8 +206,8 @@ def run_cycle(stations: list[StationRuntime]) -> None:
             pull_and_process_command(station)
             maybe_create_fault(station)
             send_station_packet(station)
-        except Exception as exc:
-            print(f"ERROR [{station.device_id}]: {exc}")
+        except Exception:
+            logger.exception("ERROR [%s]", station.device_id)
 
 
 def main() -> None:
@@ -215,7 +216,7 @@ def main() -> None:
     args = parser.parse_args()
     stations = build_stations(STATION_COUNT)
 
-    print(
+    logger.info(
         f"Starting {len(stations)} UNO Q station simulators, "
         f"interval={SEND_INTERVAL_SECONDS}s"
     )

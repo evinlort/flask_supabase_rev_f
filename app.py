@@ -3,12 +3,14 @@ import os
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template
 
+from logging_config import configure_logging
 from translations import LANGUAGES, TRANSLATIONS
 
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_PUBLIC_KEY = os.getenv("SUPABASE_PUBLIC_KEY", "").strip()
+logger = configure_logging("app")
 
 app = Flask(__name__)
 
@@ -60,4 +62,5 @@ def health():
 
 
 if __name__ == "__main__":
+    logger.info("Starting Flask application")
     app.run(host="127.0.0.1", port=5000, debug=True)

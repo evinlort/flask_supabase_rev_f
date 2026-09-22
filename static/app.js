@@ -7,6 +7,18 @@ let currentAccess = null;
 let sensorsById = new Map();
 let realtimeChannel = null;
 let realtimeReadingCount = 0;
+let sensorHistory = new Map();
+let sensorCharts = new Map();
+
+const SPARKLINE_POINTS = 24;
+
+function isDarkMode() {
+    return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+}
+
+function sparklineColor() {
+    return isDarkMode() ? "#3987e5" : "#2a78d6";
+}
 
 const loginPanel = document.getElementById("login-panel");
 const loginForm = document.getElementById("login-form");
@@ -151,6 +163,46 @@ function createReadingRow(reading) {
     return row;
 }
 
+function updateSensorSparkline(sensorId, canvas) {
+    const history = sensorHistory.get(String(sensorId)) ?? [];
+    const labels = history.map((point) => point.t);
+    const values = history.map((point) => point.v);
+    const color = sparklineColor();
+
+    let chart = sensorCharts.get(String(sensorId));
+    if (!chart) {
+        chart = new Chart(canvas, {
+            type: "line",
+            data: {
+                labels,
+                datasets: [{
+                    data: values,
+                    borderColor: color,
+                    backgroundColor: color + "1a",
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    fill: true,
+                    tension: 0.3,
+                }],
+            },
+            options: {
+                animation: false,
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: { x: { display: false }, y: { display: false } },
+                plugins: { legend: { display: false }, tooltip: { enabled: false } },
+            },
+        });
+        sensorCharts.set(String(sensorId), chart);
+    } else {
+        chart.data.labels = labels;
+        chart.data.datasets[0].data = values;
+        chart.data.datasets[0].borderColor = color;
+        chart.data.datasets[0].backgroundColor = color + "1a";
+        chart.update("none");
+    }
+}
+
 function updateSensorCard(reading) {
     const sensor = sensorInfo(reading.sensor_id);
     let card = document.getElementById(`sensor-card-${reading.sensor_id}`);
@@ -163,6 +215,7 @@ function updateSensorCard(reading) {
             <div class="sensor-name"></div>
             <div class="sensor-value"></div>
             <div class="sensor-time muted"></div>
+            <canvas class="sensor-spark"></canvas>
         `;
         sensorCards.appendChild(card);
     }
@@ -172,6 +225,14 @@ function updateSensorCard(reading) {
         `${reading.value} ${sensor.unit}`.trim();
     card.querySelector(".sensor-time").textContent = formatTime(reading.measured_at);
     lastUpdate.textContent = I18N.telemetry.updated.replace("{time}", formatTime(reading.measured_at));
+
+    const key = String(reading.sensor_id);
+    const history = sensorHistory.get(key) ?? [];
+    history.push({ t: formatTime(reading.measured_at), v: Number(reading.value) });
+    while (history.length > SPARKLINE_POINTS) history.shift();
+    sensorHistory.set(key, history);
+
+    updateSensorSparkline(reading.sensor_id, card.querySelector(".sensor-spark"));
 }
 
 async function loadReadings(deviceId) {
@@ -186,6 +247,9 @@ async function loadReadings(deviceId) {
 
     readingsBody.innerHTML = "";
     sensorCards.innerHTML = "";
+    sensorCharts.forEach((chart) => chart.destroy());
+    sensorCharts = new Map();
+    sensorHistory = new Map();
 
     if (!data?.length) {
         readingsBody.innerHTML = `<tr><td colspan="4" class="empty">${I18N.readings.empty}</td></tr>`;
@@ -209,19 +273,23 @@ function renderState(state) {
     }
 
     const s = I18N.station_state;
+    const FREQ_MAX = 50;
+    const SPEED_MAX = 3000;
     const values = [
-        [s.safety, state.safety_ok ? s.ok : s.blocked, state.safety_ok, true],
-        [s.vfd_state, state.vfd_state ?? s.unknown, state.vfd_state !== "fault", false],
-        [s.frequency, state.vfd_frequency_hz == null ? "—" : `${state.vfd_frequency_hz} Hz`, true, false],
-        [s.motor, state.motor_running ? s.running : s.stopped, true, false],
-        [s.speed, state.motor_speed_rpm == null ? "—" : `${Math.round(state.motor_speed_rpm)} rpm`, true, false],
-        [s.fault, state.fault_code ?? s.none, !state.fault_code, true],
-        [s.updated_label, formatTime(state.updated_at), true, false],
+        [s.safety, state.safety_ok ? s.ok : s.blocked, state.safety_ok, true, null],
+        [s.vfd_state, state.vfd_state ?? s.unknown, state.vfd_state !== "fault", false, null],
+        [s.frequency, state.vfd_frequency_hz == null ? "—" : `${state.vfd_frequency_hz} Hz`, true, false,
+            state.vfd_frequency_hz == null ? null : Math.min(100, (state.vfd_frequency_hz / FREQ_MAX) * 100)],
+        [s.motor, state.motor_running ? s.running : s.stopped, true, false, null],
+        [s.speed, state.motor_speed_rpm == null ? "—" : `${Math.round(state.motor_speed_rpm)} rpm`, true, false,
+            state.motor_speed_rpm == null ? null : Math.min(100, (state.motor_speed_rpm / SPEED_MAX) * 100)],
+        [s.fault, state.fault_code ?? s.none, !state.fault_code, true, null],
+        [s.updated_label, formatTime(state.updated_at), true, false, null],
     ];
 
     stationState.innerHTML = "";
 
-    for (const [label, value, good, isStatusRow] of values) {
+    for (const [label, value, good, isStatusRow, meterPercent] of values) {
         const item = document.createElement("div");
         item.className = "state-item";
         item.innerHTML = `
@@ -233,6 +301,12 @@ function renderState(state) {
         valueNode.textContent = value;
         if (isStatusRow) {
             valueNode.classList.add(good ? "state-good" : "state-bad");
+        }
+        if (meterPercent != null) {
+            const meter = document.createElement("div");
+            meter.className = "state-meter";
+            meter.innerHTML = `<div class="state-meter-fill" style="width:${meterPercent}%"></div>`;
+            item.appendChild(meter);
         }
         stationState.appendChild(item);
     }
@@ -454,6 +528,9 @@ async function subscribeRealtime(deviceId) {
 
 function clearDashboardData() {
     sensorCards.innerHTML = "";
+    sensorCharts.forEach((chart) => chart.destroy());
+    sensorCharts = new Map();
+    sensorHistory = new Map();
     stationState.innerHTML = `<div class="empty">${I18N.station_state.no_station_selected}</div>`;
     readingsBody.innerHTML = `<tr><td colspan="4" class="empty">${I18N.readings.no_station_selected}</td></tr>`;
     eventsBody.innerHTML = `<tr><td colspan="4" class="empty">${I18N.events.no_station_selected}</td></tr>`;

@@ -246,7 +246,9 @@ function updateSensorCard(reading) {
             <div class="sensor-name"></div>
             <div class="sensor-value"></div>
             <div class="sensor-time muted"></div>
-            <canvas class="sensor-spark"></canvas>
+            <div class="sensor-spark-wrap">
+                <canvas class="sensor-spark"></canvas>
+            </div>
         `;
         sensorCards.appendChild(card);
     }

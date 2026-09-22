@@ -286,11 +286,15 @@ select { min-width: 260px; }
     color: var(--series-blue);
 }
 .sensor-time { font-size: 12px; margin-top: 4px; }
+.sensor-spark-wrap {
+    position: relative;
+    height: 40px;
+    margin-top: 8px;
+}
 .sensor-spark {
     display: block;
     width: 100%;
-    height: 40px;
-    margin-top: 8px;
+    height: 100%;
 }
 
 .state-grid {

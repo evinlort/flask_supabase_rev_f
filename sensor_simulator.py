@@ -1,6 +1,7 @@
 import os
 import random
 import time
+import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -198,7 +199,20 @@ def send_station_packet(station: StationRuntime) -> None:
     )
 
 
+def run_cycle(stations: list[StationRuntime]) -> None:
+    for station in stations:
+        try:
+            pull_and_process_command(station)
+            maybe_create_fault(station)
+            send_station_packet(station)
+        except Exception as exc:
+            print(f"ERROR [{station.device_id}]: {exc}")
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Run UNO Q station simulators")
+    parser.add_argument("--once", action="store_true", help="send one telemetry cycle and exit")
+    args = parser.parse_args()
     stations = build_stations(STATION_COUNT)
 
     print(
@@ -206,16 +220,14 @@ def main() -> None:
         f"interval={SEND_INTERVAL_SECONDS}s"
     )
 
+    if args.once:
+        run_cycle(stations)
+        return
+
     while True:
         cycle_started = time.monotonic()
 
-        for station in stations:
-            try:
-                pull_and_process_command(station)
-                maybe_create_fault(station)
-                send_station_packet(station)
-            except Exception as exc:
-                print(f"ERROR [{station.device_id}]: {exc}")
+        run_cycle(stations)
 
         elapsed = time.monotonic() - cycle_started
         time.sleep(max(0.0, SEND_INTERVAL_SECONDS - elapsed))

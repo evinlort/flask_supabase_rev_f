@@ -7,8 +7,8 @@ from translations import LANGUAGES, TRANSLATIONS
 
 load_dotenv()
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_PUBLIC_KEY = os.environ["SUPABASE_PUBLIC_KEY"]
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_PUBLIC_KEY = os.getenv("SUPABASE_PUBLIC_KEY", "").strip()
 
 app = Flask(__name__)
 
@@ -38,6 +38,14 @@ def index_en():
 @app.get("/api/config")
 def config():
     # Public/publishable Supabase key. Access control is enforced by Supabase Auth + RLS.
+    if not SUPABASE_URL or not SUPABASE_PUBLIC_KEY:
+        return jsonify({
+            "error": {
+                "code": "configuration_missing",
+                "message": "SUPABASE_URL and SUPABASE_PUBLIC_KEY must be configured.",
+            }
+        }), 503
+
     return jsonify(
         {
             "supabaseUrl": SUPABASE_URL,

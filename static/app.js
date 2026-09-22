@@ -9,6 +9,7 @@ let realtimeChannel = null;
 let realtimeReadingCount = 0;
 let sensorHistory = new Map();
 let sensorCharts = new Map();
+let selectionToken = 0;
 
 const SPARKLINE_POINTS = 24;
 
@@ -23,6 +24,7 @@ function sparklineColor() {
 const loginPanel = document.getElementById("login-panel");
 const loginForm = document.getElementById("login-form");
 const loginError = document.getElementById("login-error");
+const appError = document.getElementById("app-error");
 const dashboard = document.getElementById("dashboard");
 const authSummary = document.getElementById("auth-summary");
 const logoutButton = document.getElementById("logout-button");
@@ -52,12 +54,29 @@ function setRealtimeStatus(text, connected = false) {
         : "status status-offline";
 }
 
+function errorMessage(error) {
+    return error?.message ?? String(error ?? "Unknown error");
+}
+
+function showAppError(error) {
+    appError.textContent = errorMessage(error);
+    appError.classList.remove("hidden");
+}
+
+function clearAppError() {
+    appError.textContent = "";
+    appError.classList.add("hidden");
+}
+
 function showSignedOut() {
+    selectionToken += 1;
     currentUser = null;
     selectedDeviceId = null;
     dashboard.classList.add("hidden");
     loginPanel.classList.remove("hidden");
     authSummary.textContent = "";
+    loginError.textContent = "";
+    clearAppError();
 }
 
 async function showSignedIn(user) {
@@ -65,7 +84,13 @@ async function showSignedIn(user) {
     loginPanel.classList.add("hidden");
     dashboard.classList.remove("hidden");
     authSummary.textContent = user.email ?? user.id;
-    await loadDevices();
+    clearAppError();
+    try {
+        await loadDevices();
+    } catch (error) {
+        clearDashboardData();
+        showAppError(error);
+    }
 }
 
 async function loadDevices() {
@@ -100,7 +125,7 @@ async function loadDevices() {
     await selectDevice(data[0].device_id);
 }
 
-async function loadAccess(deviceId) {
+async function loadAccess(deviceId, token = selectionToken) {
     const { data, error } = await sb
         .from("station_access")
         .select("role,can_read,can_command")
@@ -109,6 +134,8 @@ async function loadAccess(deviceId) {
         .maybeSingle();
 
     if (error) throw error;
+
+    if (token !== selectionToken || deviceId !== selectedDeviceId) return;
 
     currentAccess = data;
     accessBadge.textContent = data
@@ -120,7 +147,7 @@ async function loadAccess(deviceId) {
     });
 }
 
-async function loadSensors(deviceId) {
+async function loadSensors(deviceId, token = selectionToken) {
     const { data, error } = await sb
         .from("sensors")
         .select("id,name,unit")
@@ -128,6 +155,8 @@ async function loadSensors(deviceId) {
         .order("name");
 
     if (error) throw error;
+
+    if (token !== selectionToken || deviceId !== selectedDeviceId) return;
 
     sensorsById = new Map(
         (data ?? []).map((sensor) => [
@@ -164,6 +193,8 @@ function createReadingRow(reading) {
 }
 
 function updateSensorSparkline(sensorId, canvas) {
+    if (typeof window.Chart !== "function") return;
+
     const history = sensorHistory.get(String(sensorId)) ?? [];
     const labels = history.map((point) => point.t);
     const values = history.map((point) => point.v);
@@ -171,7 +202,7 @@ function updateSensorSparkline(sensorId, canvas) {
 
     let chart = sensorCharts.get(String(sensorId));
     if (!chart) {
-        chart = new Chart(canvas, {
+        chart = new window.Chart(canvas, {
             type: "line",
             data: {
                 labels,
@@ -235,7 +266,7 @@ function updateSensorCard(reading) {
     updateSensorSparkline(reading.sensor_id, card.querySelector(".sensor-spark"));
 }
 
-async function loadReadings(deviceId) {
+async function loadReadings(deviceId, token = selectionToken) {
     const { data, error } = await sb
         .from("sensor_readings")
         .select("id,device_id,sensor_id,value,measured_at")
@@ -244,6 +275,8 @@ async function loadReadings(deviceId) {
         .limit(200);
 
     if (error) throw error;
+
+    if (token !== selectionToken || deviceId !== selectedDeviceId) return;
 
     readingsBody.innerHTML = "";
     sensorCards.innerHTML = "";
@@ -312,7 +345,7 @@ function renderState(state) {
     }
 }
 
-async function loadState(deviceId) {
+async function loadState(deviceId, token = selectionToken) {
     const { data, error } = await sb
         .from("station_state")
         .select("*")
@@ -320,6 +353,7 @@ async function loadState(deviceId) {
         .maybeSingle();
 
     if (error) throw error;
+    if (token !== selectionToken || deviceId !== selectedDeviceId) return;
     renderState(data);
 }
 
@@ -338,7 +372,7 @@ function createEventRow(event) {
     return row;
 }
 
-async function loadEvents(deviceId) {
+async function loadEvents(deviceId, token = selectionToken) {
     const { data, error } = await sb
         .from("station_events")
         .select("id,event_type,severity,message,happened_at")
@@ -347,6 +381,7 @@ async function loadEvents(deviceId) {
         .limit(20);
 
     if (error) throw error;
+    if (token !== selectionToken || deviceId !== selectedDeviceId) return;
     eventsBody.innerHTML = "";
 
     if (!data?.length) {
@@ -372,7 +407,7 @@ function createCommandRow(command) {
     return row;
 }
 
-async function loadCommands(deviceId) {
+async function loadCommands(deviceId, token = selectionToken) {
     const { data, error } = await sb
         .from("command_requests")
         .select("id,command_type,requested_value,requested_at,status,expires_at")
@@ -381,6 +416,7 @@ async function loadCommands(deviceId) {
         .limit(20);
 
     if (error) throw error;
+    if (token !== selectionToken || deviceId !== selectedDeviceId) return;
     commandsBody.innerHTML = "";
 
     if (!data?.length) {
@@ -421,7 +457,7 @@ function renderAiAssessment(item) {
     }
 }
 
-async function loadAiAssessment(deviceId) {
+async function loadAiAssessment(deviceId, token = selectionToken) {
     const { data, error } = await sb
         .from("ai_assessments")
         .select("diagnosis,recommendation,explanation,model_version,created_at")
@@ -431,6 +467,7 @@ async function loadAiAssessment(deviceId) {
         .maybeSingle();
 
     if (error) throw error;
+    if (token !== selectionToken || deviceId !== selectedDeviceId) return;
     renderAiAssessment(data);
 }
 
@@ -442,8 +479,9 @@ async function unsubscribeRealtime() {
     setRealtimeStatus(I18N.realtime.disconnected, false);
 }
 
-async function subscribeRealtime(deviceId) {
+async function subscribeRealtime(deviceId, token = selectionToken) {
     await unsubscribeRealtime();
+    if (token !== selectionToken || deviceId !== selectedDeviceId) return;
     realtimeReadingCount = 0;
     readingCounter.textContent = I18N.readings.counter.replace("{n}", "0");
 
@@ -458,7 +496,7 @@ async function subscribeRealtime(deviceId) {
                 filter: `device_id=eq.${deviceId}`,
             },
             (payload) => {
-                if (payload.new.device_id !== selectedDeviceId) return;
+                if (token !== selectionToken || payload.new.device_id !== selectedDeviceId) return;
                 const empty = readingsBody.querySelector(".empty");
                 if (empty) readingsBody.innerHTML = "";
                 readingsBody.prepend(createReadingRow(payload.new));
@@ -478,7 +516,9 @@ async function subscribeRealtime(deviceId) {
                 table: "station_state",
                 filter: `device_id=eq.${deviceId}`,
             },
-            (payload) => renderState(payload.new)
+            (payload) => {
+                if (token === selectionToken && deviceId === selectedDeviceId) renderState(payload.new);
+            }
         )
         .on(
             "postgres_changes",
@@ -489,6 +529,7 @@ async function subscribeRealtime(deviceId) {
                 filter: `device_id=eq.${deviceId}`,
             },
             (payload) => {
+                if (token !== selectionToken || deviceId !== selectedDeviceId) return;
                 const empty = eventsBody.querySelector(".empty");
                 if (empty) eventsBody.innerHTML = "";
                 eventsBody.prepend(createEventRow(payload.new));
@@ -505,7 +546,9 @@ async function subscribeRealtime(deviceId) {
                 table: "ai_assessments",
                 filter: `device_id=eq.${deviceId}`,
             },
-            (payload) => renderAiAssessment(payload.new)
+            (payload) => {
+                if (token === selectionToken && deviceId === selectedDeviceId) renderAiAssessment(payload.new);
+            }
         )
         .on(
             "postgres_changes",
@@ -515,13 +558,17 @@ async function subscribeRealtime(deviceId) {
                 table: "command_requests",
                 filter: `device_id=eq.${deviceId}`,
             },
-            () => loadCommands(deviceId).catch(console.error)
+            () => loadCommands(deviceId, token).catch(showAppError)
         )
         .subscribe((status) => {
             if (status === "SUBSCRIBED") {
-                setRealtimeStatus(I18N.realtime.connected, true);
+                if (token === selectionToken && deviceId === selectedDeviceId) {
+                    setRealtimeStatus(I18N.realtime.connected, true);
+                }
             } else {
-                setRealtimeStatus(status.toLowerCase(), false);
+                if (token === selectionToken && deviceId === selectedDeviceId) {
+                    setRealtimeStatus(status.toLowerCase(), false);
+                }
             }
         });
 }
@@ -540,29 +587,39 @@ function clearDashboardData() {
 }
 
 async function selectDevice(deviceId) {
+    const token = ++selectionToken;
+
     if (!deviceId) {
         selectedDeviceId = null;
+        currentAccess = null;
         await unsubscribeRealtime();
         clearDashboardData();
         return;
     }
 
     selectedDeviceId = deviceId;
+    currentAccess = null;
     deviceSelect.value = deviceId;
     commandMessage.textContent = "";
+    clearAppError();
+    clearDashboardData();
     setRealtimeStatus(I18N.realtime.connecting, false);
 
-    await loadAccess(deviceId);
-    await loadSensors(deviceId);
-    await subscribeRealtime(deviceId);
+    await unsubscribeRealtime();
+    await loadAccess(deviceId, token);
+    await loadSensors(deviceId, token);
 
     await Promise.all([
-        loadReadings(deviceId),
-        loadState(deviceId),
-        loadEvents(deviceId),
-        loadCommands(deviceId),
-        loadAiAssessment(deviceId),
+        loadReadings(deviceId, token),
+        loadState(deviceId, token),
+        loadEvents(deviceId, token),
+        loadCommands(deviceId, token),
+        loadAiAssessment(deviceId, token),
     ]);
+
+    if (token === selectionToken && deviceId === selectedDeviceId) {
+        await subscribeRealtime(deviceId, token);
+    }
 }
 
 async function sendCommand(commandType) {
@@ -599,22 +656,25 @@ async function sendCommand(commandType) {
 
 async function reloadSelectedDevice() {
     if (!selectedDeviceId) return;
-    await loadAccess(selectedDeviceId);
-    await loadSensors(selectedDeviceId);
+    const token = selectionToken;
+    clearAppError();
+    await loadAccess(selectedDeviceId, token);
+    await loadSensors(selectedDeviceId, token);
     await Promise.all([
-        loadReadings(selectedDeviceId),
-        loadState(selectedDeviceId),
-        loadEvents(selectedDeviceId),
-        loadCommands(selectedDeviceId),
-        loadAiAssessment(selectedDeviceId),
+        loadReadings(selectedDeviceId, token),
+        loadState(selectedDeviceId, token),
+        loadEvents(selectedDeviceId, token),
+        loadCommands(selectedDeviceId, token),
+        loadAiAssessment(selectedDeviceId, token),
     ]);
 }
 
 async function init() {
     try {
         const response = await fetch("/api/config");
-        if (!response.ok) throw new Error("Failed to load Flask config");
-        const config = await response.json();
+        const config = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(config.error?.message ?? "Failed to load Flask config");
+        if (!window.supabase?.createClient) throw new Error("Supabase client failed to load.");
 
         sb = window.supabase.createClient(config.supabaseUrl, config.supabaseKey);
 
@@ -626,16 +686,20 @@ async function init() {
         }
 
         sb.auth.onAuthStateChange(async (_event, session) => {
-            if (session?.user) {
-                await showSignedIn(session.user);
-            } else {
-                await unsubscribeRealtime();
-                showSignedOut();
+            try {
+                if (session?.user) {
+                    await showSignedIn(session.user);
+                } else {
+                    await unsubscribeRealtime();
+                    showSignedOut();
+                }
+            } catch (error) {
+                showAppError(error);
             }
         });
     } catch (error) {
         console.error(error);
-        loginError.textContent = error.message;
+        showAppError(error);
     }
 }
 
@@ -646,12 +710,25 @@ loginForm.addEventListener("submit", async (event) => {
     const email = document.getElementById("email").value.trim();
     const password = document.getElementById("password").value;
 
-    const { error } = await sb.auth.signInWithPassword({ email, password });
-    if (error) loginError.textContent = error.message;
+    if (!sb) {
+        loginError.textContent = "Supabase is not configured.";
+        return;
+    }
+
+    try {
+        const { error } = await sb.auth.signInWithPassword({ email, password });
+        if (error) loginError.textContent = error.message;
+    } catch (error) {
+        loginError.textContent = errorMessage(error);
+    }
 });
 
 logoutButton.addEventListener("click", async () => {
-    await sb.auth.signOut();
+    try {
+        await sb?.auth.signOut();
+    } catch (error) {
+        showAppError(error);
+    }
 });
 
 deviceSelect.addEventListener("change", async (event) => {
@@ -660,16 +737,17 @@ deviceSelect.addEventListener("change", async (event) => {
     } catch (error) {
         console.error(error);
         setRealtimeStatus(I18N.realtime.error, false);
+        showAppError(error);
     }
 });
 
 reloadButton.addEventListener("click", () => {
-    reloadSelectedDevice().catch(console.error);
+    reloadSelectedDevice().catch(showAppError);
 });
 
 document.querySelectorAll("[data-command]").forEach((button) => {
     button.addEventListener("click", () => {
-        sendCommand(button.dataset.command).catch(console.error);
+        sendCommand(button.dataset.command).catch(showAppError);
     });
 });
 

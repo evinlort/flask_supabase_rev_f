@@ -139,7 +139,7 @@ h2 {
 }
 .panel:hover { box-shadow: var(--shadow-md); }
 
-.auth-panel { max-width: 760px; }
+.auth-panel { max-width: 760px; margin-inline: auto; }
 .form-row { align-items: stretch; }
 .form-row input { flex: 1; }
 
@@ -189,6 +189,16 @@ select { min-width: 260px; }
 
 .error { color: var(--status-critical); margin-top: 10px; font-weight: 600; }
 .message { margin-top: 10px; min-height: 20px; font-weight: 600; }
+.app-error {
+    margin: 0 auto 18px;
+    max-width: 900px;
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--status-critical) 35%, var(--border));
+    border-radius: var(--radius-md);
+    color: var(--status-critical);
+    background: color-mix(in srgb, var(--status-critical) 10%, var(--surface-1));
+    font-weight: 650;
+}
 
 .toolbar { flex-wrap: wrap; }
 .field { display: flex; align-items: center; gap: 8px; }
@@ -398,6 +408,7 @@ tbody tr:last-child td { border-bottom: 0; }
     background: var(--surface-1);
     border: 1px solid var(--border);
 }
+.auth-summary:empty { display: none; }
 
 .topbar-right {
     display: flex;

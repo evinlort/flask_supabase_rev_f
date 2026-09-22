@@ -191,6 +191,12 @@ source .venv/bin/activate
 python sensor_simulator.py
 ```
 
+For a deterministic smoke test, send one telemetry cycle and exit:
+
+```bash
+python sensor_simulator.py --once
+```
+
 Default:
 
 ```text
@@ -252,6 +258,12 @@ Then run:
 
 ```bash
 python ai_mock_engine.py
+```
+
+For a single assessment cycle:
+
+```bash
+python ai_mock_engine.py --once
 ```
 
 The service-role key is appropriate only for a trusted backend process. Never expose it to the browser or physical station.

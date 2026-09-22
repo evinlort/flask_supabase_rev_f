@@ -7,6 +7,7 @@ It requires SUPABASE_SERVICE_ROLE_KEY because it represents a trusted backend.
 
 import os
 import time
+import argparse
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -15,8 +16,11 @@ from supabase import Client, create_client
 load_dotenv()
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
-SERVICE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 INTERVAL_SECONDS = 30
+
+if not SERVICE_KEY:
+    raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY is required for ai_mock_engine.py")
 
 supabase: Client = create_client(SUPABASE_URL, SERVICE_KEY)
 
@@ -79,22 +83,33 @@ def build_mock_assessment(device_id: str) -> dict:
     }
 
 
+def run_cycle() -> None:
+    devices = (
+        supabase.table("devices")
+        .select("device_id")
+        .eq("enabled", True)
+        .execute()
+        .data
+        or []
+    )
+
+    for device in devices:
+        assessment = build_mock_assessment(device["device_id"])
+        supabase.table("ai_assessments").insert(assessment).execute()
+        print(f"AI MOCK {device['device_id']}: {assessment['diagnosis']}")
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the deterministic AI assessment producer")
+    parser.add_argument("--once", action="store_true", help="write one assessment cycle and exit")
+    args = parser.parse_args()
+
+    if args.once:
+        run_cycle()
+        return
+
     while True:
-        devices = (
-            supabase.table("devices")
-            .select("device_id")
-            .eq("enabled", True)
-            .execute()
-            .data
-            or []
-        )
-
-        for device in devices:
-            assessment = build_mock_assessment(device["device_id"])
-            supabase.table("ai_assessments").insert(assessment).execute()
-            print(f"AI MOCK {device['device_id']}: {assessment['diagnosis']}")
-
+        run_cycle()
         time.sleep(INTERVAL_SECONDS)
 
 

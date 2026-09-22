@@ -1,274 +1,192 @@
-SET local check_function_bodies = off;
+-- TLM Rev F prototype schema
+-- Data flow represented by this schema:
+-- station -> telemetry/state/events -> Supabase
+-- dashboard user -> command request -> Supabase
+-- Supabase -> station polls request -> local Safety Guardian -> execute/block -> result back to Supabase
+-- AI engine -> assessment linked to station/event -> Supabase
+-- dashboard receives only data permitted by station_access + RLS
 
-CREATE TABLE "public"."ai_assessments" (
-  "id"             uuid                     NOT NULL DEFAULT gen_random_uuid(),
-  "device_id"      text                     NOT NULL,
-  "event_id"       bigint,
-  "model_version"  text                     NOT NULL,
-  "diagnosis"      text,
-  "recommendation" text,
-  "explanation"    text,
-  "created_at"     timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT "ai_assessments_pkey" PRIMARY KEY (id)
+set search_path = public, extensions;
+
+-- -----------------------------------------------------------------------------
+-- Ownership / course context
+-- -----------------------------------------------------------------------------
+
+create table if not exists public.organizations (
+    id uuid primary key default gen_random_uuid(),
+    name text not null,
+    created_at timestamptz not null default now()
 );
 
-ALTER TABLE "public"."ai_assessments"
-  ENABLE ROW LEVEL SECURITY;
-
-CREATE TABLE "public"."command_requests" (
-  "id"              uuid                     NOT NULL DEFAULT gen_random_uuid(),
-  "device_id"       text                     NOT NULL,
-  "command_type"    text                     NOT NULL,
-  "requested_value" double precision,
-  "requested_at"    timestamp with time zone NOT NULL DEFAULT now(),
-  "expires_at"      timestamp with time zone NOT NULL DEFAULT (now() + '00:00:30'::interval),
-  "status"          text                     NOT NULL DEFAULT 'pending'::text,
-  "delivered_at"    timestamp with time zone,
-  "completed_at"    timestamp with time zone,
-  CONSTRAINT "command_requests_command_type_check" CHECK ((command_type = ANY (ARRAY['start'::text, 'stop'::text, 'set_frequency'::text, 'reset_fault'::text]))),
-  CONSTRAINT "command_requests_pkey" PRIMARY KEY (id),
-  CONSTRAINT "command_requests_status_check" CHECK ((status = ANY (ARRAY['pending'::text, 'delivered'::text, 'executed'::text, 'blocked'::text, 'expired'::text]))),
-  "requested_by"    uuid                     NOT NULL DEFAULT auth.uid()
+create table if not exists public.courses (
+    id uuid primary key default gen_random_uuid(),
+    organization_id uuid references public.organizations(id) on delete cascade,
+    name text not null,
+    created_at timestamptz not null default now()
 );
 
-ALTER TABLE "public"."command_requests"
-  ENABLE ROW LEVEL SECURITY;
+-- -----------------------------------------------------------------------------
+-- Stations and access
+-- -----------------------------------------------------------------------------
 
-CREATE TABLE "public"."command_results" (
-  "command_id"     uuid                     NOT NULL,
-  "device_id"      text                     NOT NULL,
-  "outcome"        text                     NOT NULL,
-  "reason"         text,
-  "result_payload" jsonb                    NOT NULL DEFAULT '{}'::jsonb,
-  "completed_at"   timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT "command_results_outcome_check" CHECK ((outcome = ANY (ARRAY['executed'::text, 'blocked'::text]))),
-  CONSTRAINT "command_results_pkey" PRIMARY KEY (command_id)
+create table if not exists public.devices (
+    device_id text primary key,
+    organization_id uuid references public.organizations(id) on delete set null,
+    course_id uuid references public.courses(id) on delete set null,
+    display_name text not null,
+    device_type text not null default 'UNO Q',
+    enabled boolean not null default true,
+    created_at timestamptz not null default now(),
+    last_seen_at timestamptz
 );
 
-ALTER TABLE "public"."command_results"
-  ENABLE ROW LEVEL SECURITY;
-
-CREATE TABLE "public"."courses" (
-  "id"              uuid                     NOT NULL DEFAULT gen_random_uuid(),
-  "organization_id" uuid,
-  "name"            text                     NOT NULL,
-  "created_at"      timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT "courses_pkey" PRIMARY KEY (id)
+-- Credentials are deliberately separated from devices so browser users can never
+-- select even a hash of a station secret.
+create table if not exists public.device_credentials (
+    device_id text primary key references public.devices(device_id) on delete cascade,
+    secret_hash bytea not null,
+    created_at timestamptz not null default now()
 );
 
-ALTER TABLE "public"."courses"
-  ENABLE ROW LEVEL SECURITY;
+-- Migration helpers for the earlier prototype schema.
+alter table public.devices add column if not exists organization_id uuid references public.organizations(id) on delete set null;
+alter table public.devices add column if not exists course_id uuid references public.courses(id) on delete set null;
+alter table public.devices add column if not exists display_name text;
+alter table public.devices add column if not exists device_type text default 'UNO Q';
+alter table public.devices add column if not exists enabled boolean not null default true;
+alter table public.devices add column if not exists created_at timestamptz not null default now();
+alter table public.devices add column if not exists last_seen_at timestamptz;
 
-CREATE TABLE "public"."device_credentials" (
-  "device_id"   text                     NOT NULL,
-  "secret_hash" bytea                    NOT NULL,
-  "created_at"  timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT "device_credentials_pkey" PRIMARY KEY (device_id)
+create table if not exists public.station_access (
+    user_id uuid not null references auth.users(id) on delete cascade,
+    device_id text not null references public.devices(device_id) on delete cascade,
+    role text not null check (role in ('student', 'teacher', 'manager')),
+    can_read boolean not null default true,
+    can_command boolean not null default false,
+    created_at timestamptz not null default now(),
+    primary key (user_id, device_id)
 );
 
-ALTER TABLE "public"."device_credentials"
-  ENABLE ROW LEVEL SECURITY;
+-- -----------------------------------------------------------------------------
+-- Telemetry and station state
+-- -----------------------------------------------------------------------------
 
-CREATE TABLE "public"."devices" (
-  "device_id"       text                     NOT NULL,
-  "organization_id" uuid,
-  "course_id"       uuid,
-  "display_name"    text                     NOT NULL,
-  "device_type"     text                     NOT NULL DEFAULT 'UNO Q'::text,
-  "enabled"         boolean                  NOT NULL DEFAULT true,
-  "created_at"      timestamp with time zone NOT NULL DEFAULT now(),
-  "last_seen_at"    timestamp with time zone,
-  CONSTRAINT "devices_pkey" PRIMARY KEY (device_id)
+create table if not exists public.sensors (
+    id bigint generated always as identity primary key,
+    device_id text not null references public.devices(device_id) on delete cascade,
+    name text not null,
+    unit text,
+    category text not null default 'telemetry',
+    created_at timestamptz not null default now(),
+    unique (device_id, name)
 );
 
-ALTER TABLE "public"."devices"
-  ENABLE ROW LEVEL SECURITY;
+alter table public.sensors add column if not exists category text not null default 'telemetry';
 
-CREATE TABLE "public"."organizations" (
-  "id"         uuid                     NOT NULL DEFAULT gen_random_uuid(),
-  "name"       text                     NOT NULL,
-  "created_at" timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT "organizations_pkey" PRIMARY KEY (id)
+create table if not exists public.sensor_readings (
+    id bigint generated always as identity primary key,
+    device_id text not null references public.devices(device_id) on delete cascade,
+    sensor_id bigint not null references public.sensors(id) on delete cascade,
+    value double precision not null,
+    measured_at timestamptz not null,
+    received_at timestamptz not null default now()
 );
 
-ALTER TABLE "public"."organizations"
-  ENABLE ROW LEVEL SECURITY;
+alter table public.sensor_readings add column if not exists device_id text references public.devices(device_id) on delete cascade;
+alter table public.sensor_readings add column if not exists received_at timestamptz not null default now();
 
-CREATE TABLE "public"."sensor_readings" (
-  "id"          bigint                   GENERATED ALWAYS AS IDENTITY NOT NULL,
-  "device_id"   text                     NOT NULL,
-  "sensor_id"   bigint                   NOT NULL,
-  "value"       double precision         NOT NULL,
-  "measured_at" timestamp with time zone NOT NULL,
-  "received_at" timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT "sensor_readings_pkey" PRIMARY KEY (id)
+create index if not exists idx_sensor_readings_device_time
+    on public.sensor_readings(device_id, measured_at desc);
+
+create index if not exists idx_sensor_readings_sensor_time
+    on public.sensor_readings(sensor_id, measured_at desc);
+
+create table if not exists public.station_state (
+    device_id text primary key references public.devices(device_id) on delete cascade,
+    safety_ok boolean not null default true,
+    vfd_state text not null default 'stopped',
+    vfd_frequency_hz double precision,
+    motor_running boolean not null default false,
+    motor_speed_rpm double precision,
+    fault_code text,
+    updated_at timestamptz not null default now()
 );
 
-ALTER TABLE "public"."sensor_readings"
-  ENABLE ROW LEVEL SECURITY;
-
-CREATE TABLE "public"."sensors" (
-  "id"         bigint                   GENERATED ALWAYS AS IDENTITY NOT NULL,
-  "device_id"  text                     NOT NULL,
-  "name"       text                     NOT NULL,
-  "unit"       text,
-  "category"   text                     NOT NULL DEFAULT 'telemetry'::text,
-  "created_at" timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT "sensors_device_id_name_key" UNIQUE (device_id, name),
-  CONSTRAINT "sensors_pkey" PRIMARY KEY (id)
+create table if not exists public.station_events (
+    id bigint generated always as identity primary key,
+    device_id text not null references public.devices(device_id) on delete cascade,
+    event_type text not null,
+    severity text not null check (severity in ('info', 'warning', 'fault')),
+    message text not null,
+    payload jsonb not null default '{}'::jsonb,
+    happened_at timestamptz not null default now()
 );
 
-ALTER TABLE "public"."sensors"
-  ENABLE ROW LEVEL SECURITY;
+create index if not exists idx_station_events_device_time
+    on public.station_events(device_id, happened_at desc);
 
-CREATE TABLE "public"."station_access" (
-  "user_id"     uuid                     NOT NULL,
-  "device_id"   text                     NOT NULL,
-  "role"        text                     NOT NULL,
-  "can_read"    boolean                  NOT NULL DEFAULT true,
-  "can_command" boolean                  NOT NULL DEFAULT false,
-  "created_at"  timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT "station_access_pkey" PRIMARY KEY (user_id, device_id),
-  CONSTRAINT "station_access_role_check" CHECK ((role = ANY (ARRAY['student'::text, 'teacher'::text, 'manager'::text])))
+-- -----------------------------------------------------------------------------
+-- AI output. The AI engine is external; Supabase stores the documented result.
+-- -----------------------------------------------------------------------------
+
+create table if not exists public.ai_assessments (
+    id uuid primary key default gen_random_uuid(),
+    device_id text not null references public.devices(device_id) on delete cascade,
+    event_id bigint references public.station_events(id) on delete set null,
+    model_version text not null,
+    diagnosis text,
+    recommendation text,
+    explanation text,
+    created_at timestamptz not null default now()
 );
 
-ALTER TABLE "public"."station_access"
-  ENABLE ROW LEVEL SECURITY;
+create index if not exists idx_ai_assessments_device_time
+    on public.ai_assessments(device_id, created_at desc);
 
-CREATE TABLE "public"."station_events" (
-  "id"          bigint                   GENERATED ALWAYS AS IDENTITY NOT NULL,
-  "device_id"   text                     NOT NULL,
-  "event_type"  text                     NOT NULL,
-  "severity"    text                     NOT NULL,
-  "message"     text                     NOT NULL,
-  "payload"     jsonb                    NOT NULL DEFAULT '{}'::jsonb,
-  "happened_at" timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT "station_events_pkey" PRIMARY KEY (id),
-  CONSTRAINT "station_events_severity_check" CHECK ((severity = ANY (ARRAY['info'::text, 'warning'::text, 'fault'::text])))
+-- -----------------------------------------------------------------------------
+-- Cloud command requests and station execution results
+-- -----------------------------------------------------------------------------
+
+create table if not exists public.command_requests (
+    id uuid primary key default gen_random_uuid(),
+    device_id text not null references public.devices(device_id) on delete cascade,
+    requested_by uuid not null default auth.uid() references auth.users(id) on delete restrict,
+    command_type text not null check (
+        command_type in ('start', 'stop', 'set_frequency', 'reset_fault')
+    ),
+    requested_value double precision,
+    requested_at timestamptz not null default now(),
+    expires_at timestamptz not null default (now() + interval '30 seconds'),
+    status text not null default 'pending' check (
+        status in ('pending', 'delivered', 'executed', 'blocked', 'expired')
+    ),
+    delivered_at timestamptz,
+    completed_at timestamptz
 );
 
-ALTER TABLE "public"."station_events"
-  ENABLE ROW LEVEL SECURITY;
+create index if not exists idx_command_requests_device_status_time
+    on public.command_requests(device_id, status, requested_at);
 
-CREATE TABLE "public"."station_state" (
-  "device_id"        text                     NOT NULL,
-  "safety_ok"        boolean                  NOT NULL DEFAULT true,
-  "vfd_state"        text                     NOT NULL DEFAULT 'stopped'::text,
-  "vfd_frequency_hz" double precision,
-  "motor_running"    boolean                  NOT NULL DEFAULT false,
-  "motor_speed_rpm"  double precision,
-  "fault_code"       text,
-  "updated_at"       timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT "station_state_pkey" PRIMARY KEY (device_id)
+create table if not exists public.command_results (
+    command_id uuid primary key references public.command_requests(id) on delete cascade,
+    device_id text not null references public.devices(device_id) on delete cascade,
+    outcome text not null check (outcome in ('executed', 'blocked')),
+    reason text,
+    result_payload jsonb not null default '{}'::jsonb,
+    completed_at timestamptz not null default now()
 );
 
-ALTER TABLE "public"."station_state"
-  ENABLE ROW LEVEL SECURITY;
+-- -----------------------------------------------------------------------------
+-- RLS helper functions
+-- -----------------------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION public.complete_station_command (
-  p_device_id      text,
-  p_device_key     text,
-  p_command_id     uuid,
-  p_outcome        text,
-  p_reason         text  DEFAULT NULL::text,
-  p_result_payload jsonb DEFAULT '{}'::jsonb
-)
-  RETURNS void
-  LANGUAGE plpgsql
-  SECURITY DEFINER
-  SET search_path TO 'public', 'extensions'
-  AS $function$
-declare
-    command_name text;
-begin
-    if not public.station_key_valid(p_device_id, p_device_key) then
-        raise exception 'invalid station credentials';
-    end if;
-
-    if p_outcome not in ('executed', 'blocked') then
-        raise exception 'outcome must be executed or blocked';
-    end if;
-
-    select cr.command_type
-    into command_name
-    from public.command_requests cr
-    where cr.id = p_command_id
-      and cr.device_id = p_device_id
-      and cr.status in ('pending', 'delivered');
-
-    if command_name is null then
-        raise exception 'command not found or already completed';
-    end if;
-
-    update public.command_requests
-    set status = p_outcome,
-        completed_at = now()
-    where id = p_command_id;
-
-    insert into public.command_results (
-        command_id, device_id, outcome, reason, result_payload, completed_at
-    )
-    values (
-        p_command_id, p_device_id, p_outcome, p_reason, p_result_payload, now()
-    )
-    on conflict (command_id)
-    do update set
-        outcome = excluded.outcome,
-        reason = excluded.reason,
-        result_payload = excluded.result_payload,
-        completed_at = excluded.completed_at;
-
-    insert into public.station_events (
-        device_id,
-        event_type,
-        severity,
-        message,
-        payload,
-        happened_at
-    )
-    values (
-        p_device_id,
-        'command_result',
-        case when p_outcome = 'executed' then 'info' else 'warning' end,
-        command_name || ': ' || p_outcome || coalesce(' (' || p_reason || ')', ''),
-        jsonb_build_object(
-            'command_id', p_command_id,
-            'command_type', command_name,
-            'outcome', p_outcome,
-            'reason', p_reason
-        ) || coalesce(p_result_payload, '{}'::jsonb),
-        now()
-    );
-end;
-$function$;
-
-CREATE OR REPLACE FUNCTION public.has_station_command_access (
-  p_device_id text
-)
-  RETURNS boolean
-  LANGUAGE sql
-  STABLE
-  SECURITY DEFINER
-  SET search_path TO 'public'
-  AS $function$
-    select exists (
-        select 1
-        from public.station_access sa
-        where sa.user_id = auth.uid()
-          and sa.device_id = p_device_id
-          and sa.can_command = true
-    );
-$function$;
-
-CREATE OR REPLACE FUNCTION public.has_station_read_access (
-  p_device_id text
-)
-  RETURNS boolean
-  LANGUAGE sql
-  STABLE
-  SECURITY DEFINER
-  SET search_path TO 'public'
-  AS $function$
+create or replace function public.has_station_read_access(p_device_id text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
     select exists (
         select 1
         from public.station_access sa
@@ -276,20 +194,198 @@ CREATE OR REPLACE FUNCTION public.has_station_read_access (
           and sa.device_id = p_device_id
           and sa.can_read = true
     );
-$function$;
+$$;
 
-CREATE OR REPLACE FUNCTION public.ingest_station_packet (
-  p_device_id   text,
-  p_device_key  text,
-  p_measured_at timestamp with time zone,
-  p_telemetry   jsonb,
-  p_state       jsonb
+create or replace function public.has_station_command_access(p_device_id text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+    select exists (
+        select 1
+        from public.station_access sa
+        where sa.user_id = auth.uid()
+          and sa.device_id = p_device_id
+          and sa.can_command = true
+    );
+$$;
+
+create or replace function public.is_station_manager(p_device_id text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+    select exists (
+        select 1
+        from public.station_access sa
+        where sa.user_id = auth.uid()
+          and sa.device_id = p_device_id
+          and sa.role = 'manager'
+    );
+$$;
+
+revoke all on function public.has_station_read_access(text) from public;
+revoke all on function public.has_station_command_access(text) from public;
+revoke all on function public.is_station_manager(text) from public;
+grant execute on function public.has_station_read_access(text) to authenticated;
+grant execute on function public.has_station_command_access(text) to authenticated;
+grant execute on function public.is_station_manager(text) to authenticated;
+
+-- -----------------------------------------------------------------------------
+-- RLS policies
+-- -----------------------------------------------------------------------------
+
+alter table public.devices enable row level security;
+alter table public.device_credentials enable row level security;
+alter table public.station_access enable row level security;
+alter table public.sensors enable row level security;
+alter table public.sensor_readings enable row level security;
+alter table public.station_state enable row level security;
+alter table public.station_events enable row level security;
+alter table public.ai_assessments enable row level security;
+alter table public.command_requests enable row level security;
+alter table public.command_results enable row level security;
+
+-- Remove permissive policies/functions from the earlier anonymous-read prototype.
+drop policy if exists "prototype read devices" on public.devices;
+drop policy if exists "prototype read sensors" on public.sensors;
+drop policy if exists "prototype read readings" on public.sensor_readings;
+drop function if exists public.ingest_sensor_batch(text, jsonb);
+
+-- Replace policies idempotently.
+drop policy if exists devices_read on public.devices;
+create policy devices_read on public.devices
+for select to authenticated
+using (public.has_station_read_access(device_id));
+
+drop policy if exists station_access_read on public.station_access;
+create policy station_access_read on public.station_access
+for select to authenticated
+using (user_id = auth.uid() or public.is_station_manager(device_id));
+
+drop policy if exists station_access_manager_insert on public.station_access;
+create policy station_access_manager_insert on public.station_access
+for insert to authenticated
+with check (public.is_station_manager(device_id));
+
+drop policy if exists station_access_manager_update on public.station_access;
+create policy station_access_manager_update on public.station_access
+for update to authenticated
+using (public.is_station_manager(device_id))
+with check (public.is_station_manager(device_id));
+
+drop policy if exists station_access_manager_delete on public.station_access;
+create policy station_access_manager_delete on public.station_access
+for delete to authenticated
+using (public.is_station_manager(device_id));
+
+drop policy if exists sensors_read on public.sensors;
+create policy sensors_read on public.sensors
+for select to authenticated
+using (public.has_station_read_access(device_id));
+
+drop policy if exists sensor_readings_read on public.sensor_readings;
+create policy sensor_readings_read on public.sensor_readings
+for select to authenticated
+using (public.has_station_read_access(device_id));
+
+drop policy if exists station_state_read on public.station_state;
+create policy station_state_read on public.station_state
+for select to authenticated
+using (public.has_station_read_access(device_id));
+
+drop policy if exists station_events_read on public.station_events;
+create policy station_events_read on public.station_events
+for select to authenticated
+using (public.has_station_read_access(device_id));
+
+drop policy if exists ai_assessments_read on public.ai_assessments;
+create policy ai_assessments_read on public.ai_assessments
+for select to authenticated
+using (public.has_station_read_access(device_id));
+
+drop policy if exists command_requests_read on public.command_requests;
+create policy command_requests_read on public.command_requests
+for select to authenticated
+using (public.has_station_read_access(device_id));
+
+drop policy if exists command_requests_insert on public.command_requests;
+create policy command_requests_insert on public.command_requests
+for insert to authenticated
+with check (
+    requested_by = auth.uid()
+    and public.has_station_command_access(device_id)
+);
+
+drop policy if exists command_results_read on public.command_results;
+create policy command_results_read on public.command_results
+for select to authenticated
+using (public.has_station_read_access(device_id));
+
+-- Browser privileges. No direct station telemetry writes are granted.
+revoke all on table public.devices from anon, authenticated;
+revoke all on table public.device_credentials from anon, authenticated;
+revoke all on table public.station_access from anon, authenticated;
+revoke all on table public.sensors from anon, authenticated;
+revoke all on table public.sensor_readings from anon, authenticated;
+revoke all on table public.station_state from anon, authenticated;
+revoke all on table public.station_events from anon, authenticated;
+revoke all on table public.ai_assessments from anon, authenticated;
+revoke all on table public.command_requests from anon, authenticated;
+revoke all on table public.command_results from anon, authenticated;
+
+grant select on public.devices to authenticated;
+grant select on public.station_access to authenticated;
+grant select on public.sensors to authenticated;
+grant select on public.sensor_readings to authenticated;
+grant select on public.station_state to authenticated;
+grant select on public.station_events to authenticated;
+grant select on public.ai_assessments to authenticated;
+grant select, insert on public.command_requests to authenticated;
+grant select on public.command_results to authenticated;
+
+-- -----------------------------------------------------------------------------
+-- Device-authenticated station functions
+-- -----------------------------------------------------------------------------
+
+create or replace function public.station_key_valid(
+    p_device_id text,
+    p_device_key text
 )
-  RETURNS integer
-  LANGUAGE plpgsql
-  SECURITY DEFINER
-  SET search_path TO 'public', 'extensions'
-  AS $function$
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $$
+    select exists (
+        select 1
+        from public.device_credentials dc
+        join public.devices d on d.device_id = dc.device_id
+        where dc.device_id = p_device_id
+          and d.enabled = true
+          and dc.secret_hash = digest(p_device_key, 'sha256')
+    );
+$$;
+
+revoke all on function public.station_key_valid(text, text) from public;
+
+create or replace function public.ingest_station_packet(
+    p_device_id text,
+    p_device_key text,
+    p_measured_at timestamptz,
+    p_telemetry jsonb,
+    p_state jsonb
+)
+returns integer
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
 declare
     item jsonb;
     sensor_name text;
@@ -432,68 +528,38 @@ begin
 
     return inserted_count;
 end;
-$function$;
+$$;
 
-CREATE OR REPLACE FUNCTION public.is_station_manager (
-  p_device_id text
+create or replace function public.pull_next_station_command(
+    p_device_id text,
+    p_device_key text
 )
-  RETURNS boolean
-  LANGUAGE sql
-  STABLE
-  SECURITY DEFINER
-  SET search_path TO 'public'
-  AS $function$
-    select exists (
-        select 1
-        from public.station_access sa
-        where sa.user_id = auth.uid()
-          and sa.device_id = p_device_id
-          and sa.role = 'manager'
-    );
-$function$;
-
-CREATE OR REPLACE FUNCTION public.pull_next_station_command (
-  p_device_id  text,
-  p_device_key text
-)
-  RETURNS TABLE (
-    command_id      uuid,
-    command_type    text,
+returns table (
+    command_id uuid,
+    command_type text,
     requested_value double precision,
-    requested_at    timestamp with time zone,
-    expires_at      timestamp with time zone
-  )
-  LANGUAGE plpgsql
-  SECURITY DEFINER
-  SET search_path TO 'public', 'extensions'
-  AS $function$
+    requested_at timestamptz,
+    expires_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
 begin
-    if not public.station_key_valid(
-        p_device_id,
-        p_device_key
-    ) then
+    if not public.station_key_valid(p_device_id, p_device_key) then
         raise exception 'invalid station credentials';
     end if;
 
-
-    -- Expire old commands.
-    -- IMPORTANT: every column is qualified with "cr"
-    -- because RETURNS TABLE creates PL/pgSQL variables
-    -- such as expires_at and requested_at.
-    update public.command_requests as cr
-    set
-        status = 'expired',
-        completed_at = now()
-    where cr.device_id = p_device_id
-      and cr.status = 'pending'
-      and cr.expires_at <= now();
-
+    update public.command_requests
+    set status = 'expired', completed_at = now()
+    where device_id = p_device_id
+      and status = 'pending'
+      and command_requests.expires_at <= now();
 
     return query
-
     with candidate as (
         select cr.id
-        from public.command_requests as cr
+        from public.command_requests cr
         where cr.device_id = p_device_id
           and cr.status = 'pending'
           and cr.expires_at > now()
@@ -501,14 +567,10 @@ begin
         for update skip locked
         limit 1
     )
-
-    update public.command_requests as cr
-    set
-        status = 'delivered',
-        delivered_at = now()
-    from candidate as c
+    update public.command_requests cr
+    set status = 'delivered', delivered_at = now()
+    from candidate c
     where cr.id = c.id
-
     returning
         cr.id,
         cr.command_type,
@@ -516,289 +578,161 @@ begin
         cr.requested_at,
         cr.expires_at;
 end;
-$function$;
+$$;
 
-CREATE OR REPLACE FUNCTION public.rls_auto_enable()
-  RETURNS event_trigger
-  LANGUAGE plpgsql
-  SECURITY DEFINER
-  SET search_path TO 'pg_catalog'
-  AS $function$
-DECLARE
-  cmd record;
-BEGIN
-  FOR cmd IN
-    SELECT *
-    FROM pg_event_trigger_ddl_commands()
-    WHERE command_tag IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO')
-      AND object_type IN ('table','partitioned table')
-  LOOP
-     IF cmd.schema_name IS NOT NULL AND cmd.schema_name IN ('public') AND cmd.schema_name NOT IN ('pg_catalog','information_schema') AND cmd.schema_name NOT LIKE 'pg_toast%' AND cmd.schema_name NOT LIKE 'pg_temp%' THEN
-      BEGIN
-        EXECUTE format('alter table if exists %s enable row level security', cmd.object_identity);
-        RAISE LOG 'rls_auto_enable: enabled RLS on %', cmd.object_identity;
-      EXCEPTION
-        WHEN OTHERS THEN
-          RAISE LOG 'rls_auto_enable: failed to enable RLS on %', cmd.object_identity;
-      END;
-     ELSE
-        RAISE LOG 'rls_auto_enable: skip % (either system schema or not in enforced list: %.)', cmd.object_identity, cmd.schema_name;
-     END IF;
-  END LOOP;
-END;
-$function$;
-
-CREATE OR REPLACE FUNCTION public.station_key_valid (
-  p_device_id  text,
-  p_device_key text
+create or replace function public.complete_station_command(
+    p_device_id text,
+    p_device_key text,
+    p_command_id uuid,
+    p_outcome text,
+    p_reason text default null,
+    p_result_payload jsonb default '{}'::jsonb
 )
-  RETURNS boolean
-  LANGUAGE sql
-  STABLE
-  SECURITY DEFINER
-  SET search_path TO 'public', 'extensions'
-  AS $function$
-    select exists (
-        select 1
-        from public.device_credentials dc
-        join public.devices d on d.device_id = dc.device_id
-        where dc.device_id = p_device_id
-          and d.enabled = true
-          and dc.secret_hash = digest(p_device_key, 'sha256')
+returns void
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+    command_name text;
+begin
+    if not public.station_key_valid(p_device_id, p_device_key) then
+        raise exception 'invalid station credentials';
+    end if;
+
+    if p_outcome not in ('executed', 'blocked') then
+        raise exception 'outcome must be executed or blocked';
+    end if;
+
+    select cr.command_type
+    into command_name
+    from public.command_requests cr
+    where cr.id = p_command_id
+      and cr.device_id = p_device_id
+      and cr.status in ('pending', 'delivered');
+
+    if command_name is null then
+        raise exception 'command not found or already completed';
+    end if;
+
+    update public.command_requests
+    set status = p_outcome,
+        completed_at = now()
+    where id = p_command_id;
+
+    insert into public.command_results (
+        command_id, device_id, outcome, reason, result_payload, completed_at
+    )
+    values (
+        p_command_id, p_device_id, p_outcome, p_reason, p_result_payload, now()
+    )
+    on conflict (command_id)
+    do update set
+        outcome = excluded.outcome,
+        reason = excluded.reason,
+        result_payload = excluded.result_payload,
+        completed_at = excluded.completed_at;
+
+    insert into public.station_events (
+        device_id,
+        event_type,
+        severity,
+        message,
+        payload,
+        happened_at
+    )
+    values (
+        p_device_id,
+        'command_result',
+        case when p_outcome = 'executed' then 'info' else 'warning' end,
+        command_name || ': ' || p_outcome || coalesce(' (' || p_reason || ')', ''),
+        jsonb_build_object(
+            'command_id', p_command_id,
+            'command_type', command_name,
+            'outcome', p_outcome,
+            'reason', p_reason
+        ) || coalesce(p_result_payload, '{}'::jsonb),
+        now()
     );
-$function$;
-
-ALTER TABLE "public"."command_results"
-  ADD CONSTRAINT "command_results_command_id_fkey" FOREIGN KEY (command_id) REFERENCES public.command_requests(id) ON DELETE CASCADE;
-
-ALTER TABLE "public"."devices"
-  ADD CONSTRAINT "devices_course_id_fkey" FOREIGN KEY (course_id) REFERENCES public.courses(id) ON DELETE SET NULL;
-
-ALTER TABLE "public"."ai_assessments"
-  ADD CONSTRAINT "ai_assessments_device_id_fkey" FOREIGN KEY (device_id) REFERENCES public.devices(device_id) ON DELETE CASCADE;
-
-ALTER TABLE "public"."command_requests"
-  ADD CONSTRAINT "command_requests_device_id_fkey" FOREIGN KEY (device_id) REFERENCES public.devices(device_id) ON DELETE CASCADE;
-
-ALTER TABLE "public"."command_results"
-  ADD CONSTRAINT "command_results_device_id_fkey" FOREIGN KEY (device_id) REFERENCES public.devices(device_id) ON DELETE CASCADE;
-
-ALTER TABLE "public"."device_credentials"
-  ADD CONSTRAINT "device_credentials_device_id_fkey" FOREIGN KEY (device_id) REFERENCES public.devices(device_id) ON DELETE CASCADE;
-
-ALTER TABLE "public"."courses"
-  ADD CONSTRAINT "courses_organization_id_fkey" FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
-
-ALTER TABLE "public"."devices"
-  ADD CONSTRAINT "devices_organization_id_fkey" FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE SET NULL;
-
-ALTER TABLE "public"."sensor_readings"
-  ADD CONSTRAINT "sensor_readings_device_id_fkey" FOREIGN KEY (device_id) REFERENCES public.devices(device_id) ON DELETE CASCADE;
-
-ALTER TABLE "public"."sensors"
-  ADD CONSTRAINT "sensors_device_id_fkey" FOREIGN KEY (device_id) REFERENCES public.devices(device_id) ON DELETE CASCADE;
-
-ALTER TABLE "public"."sensor_readings"
-  ADD CONSTRAINT "sensor_readings_sensor_id_fkey" FOREIGN KEY (sensor_id) REFERENCES public.sensors(id) ON DELETE CASCADE;
-
-ALTER TABLE "public"."station_access"
-  ADD CONSTRAINT "station_access_device_id_fkey" FOREIGN KEY (device_id) REFERENCES public.devices(device_id) ON DELETE CASCADE;
-
-ALTER TABLE "public"."station_access"
-  ADD CONSTRAINT "station_access_user_id_fkey" FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
-
-ALTER TABLE "public"."station_events"
-  ADD CONSTRAINT "station_events_device_id_fkey" FOREIGN KEY (device_id) REFERENCES public.devices(device_id) ON DELETE CASCADE;
-
-ALTER TABLE "public"."ai_assessments"
-  ADD CONSTRAINT "ai_assessments_event_id_fkey" FOREIGN KEY (event_id) REFERENCES public.station_events(id) ON DELETE SET NULL;
-
-ALTER TABLE "public"."station_state"
-  ADD CONSTRAINT "station_state_device_id_fkey" FOREIGN KEY (device_id) REFERENCES public.devices(device_id) ON DELETE CASCADE;
-
-CREATE INDEX idx_ai_assessments_device_time ON public.ai_assessments USING btree (device_id, created_at DESC);
-
-CREATE INDEX idx_command_requests_device_status_time ON public.command_requests USING btree (device_id, status, requested_at);
-
-CREATE INDEX idx_sensor_readings_device_time ON public.sensor_readings USING btree (device_id, measured_at DESC);
-
-CREATE INDEX idx_sensor_readings_sensor_time ON public.sensor_readings USING btree (sensor_id, measured_at DESC);
-
-CREATE INDEX idx_station_events_device_time ON public.station_events USING btree (device_id, happened_at DESC);
-
-CREATE POLICY "ai_assessments_read" ON "public"."ai_assessments"
-  FOR SELECT
-  TO "authenticated"
-  USING (public.has_station_read_access(device_id));
-
-CREATE POLICY "command_requests_read" ON "public"."command_requests"
-  FOR SELECT
-  TO "authenticated"
-  USING (public.has_station_read_access(device_id));
-
-CREATE POLICY "command_results_read" ON "public"."command_results"
-  FOR SELECT
-  TO "authenticated"
-  USING (public.has_station_read_access(device_id));
-
-CREATE POLICY "devices_read" ON "public"."devices"
-  FOR SELECT
-  TO "authenticated"
-  USING (public.has_station_read_access(device_id));
-
-CREATE POLICY "sensor_readings_read" ON "public"."sensor_readings"
-  FOR SELECT
-  TO "authenticated"
-  USING (public.has_station_read_access(device_id));
-
-CREATE POLICY "sensors_read" ON "public"."sensors"
-  FOR SELECT
-  TO "authenticated"
-  USING (public.has_station_read_access(device_id));
-
-CREATE POLICY "station_access_manager_delete" ON "public"."station_access"
-  FOR DELETE
-  TO "authenticated"
-  USING (public.is_station_manager(device_id));
-
-CREATE POLICY "station_access_manager_insert" ON "public"."station_access"
-  FOR INSERT
-  TO "authenticated"
-  WITH CHECK (public.is_station_manager(device_id));
-
-CREATE POLICY "station_access_manager_update" ON "public"."station_access"
-  FOR UPDATE
-  TO "authenticated"
-  USING (public.is_station_manager(device_id))
-  WITH CHECK (public.is_station_manager(device_id));
-
-CREATE POLICY "station_access_read" ON "public"."station_access"
-  FOR SELECT
-  TO "authenticated"
-  USING (((user_id = auth.uid()) OR public.is_station_manager(device_id)));
-
-CREATE POLICY "station_events_read" ON "public"."station_events"
-  FOR SELECT
-  TO "authenticated"
-  USING (public.has_station_read_access(device_id));
-
-CREATE POLICY "station_state_read" ON "public"."station_state"
-  FOR SELECT
-  TO "authenticated"
-  USING (public.has_station_read_access(device_id));
-
-CREATE EVENT TRIGGER "ensure_rls"
-  ON ddl_command_end
-  WHEN TAG IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO')
-  EXECUTE FUNCTION "public"."rls_auto_enable"();
-
-ALTER PUBLICATION "supabase_realtime" ADD TABLE "public"."ai_assessments";
-
-ALTER PUBLICATION "supabase_realtime" ADD TABLE "public"."command_requests";
-
-ALTER PUBLICATION "supabase_realtime" ADD TABLE "public"."command_results";
-
-ALTER PUBLICATION "supabase_realtime" ADD TABLE "public"."sensor_readings";
-
-ALTER PUBLICATION "supabase_realtime" ADD TABLE "public"."station_events";
-
-ALTER PUBLICATION "supabase_realtime" ADD TABLE "public"."station_state";
-
-REVOKE ALL ON FUNCTION "public"."complete_station_command"(text, text, uuid, text, text, jsonb) FROM PUBLIC;
-
-GRANT EXECUTE ON FUNCTION "public"."complete_station_command"(text, text, uuid, text, text, jsonb) TO "anon", "authenticated", "postgres", "service_role";
-
-REVOKE ALL ON FUNCTION "public"."has_station_command_access"(text) FROM PUBLIC;
-
-GRANT EXECUTE ON FUNCTION "public"."has_station_command_access"(text) TO "anon", "authenticated", "postgres", "service_role";
-
-REVOKE ALL ON FUNCTION "public"."has_station_read_access"(text) FROM PUBLIC;
-
-GRANT EXECUTE ON FUNCTION "public"."has_station_read_access"(text) TO "anon", "authenticated", "postgres", "service_role";
-
-REVOKE ALL ON FUNCTION "public"."ingest_station_packet"(text, text, timestamp WITH time zone, jsonb, jsonb) FROM PUBLIC;
-
-GRANT EXECUTE ON FUNCTION "public"."ingest_station_packet"(text, text, timestamp WITH time zone, jsonb, jsonb) TO "anon", "authenticated", "postgres", "service_role";
-
-REVOKE ALL ON FUNCTION "public"."is_station_manager"(text) FROM PUBLIC;
-
-GRANT EXECUTE ON FUNCTION "public"."is_station_manager"(text) TO "anon", "authenticated", "postgres", "service_role";
-
-REVOKE ALL ON FUNCTION "public"."pull_next_station_command"(text, text) FROM PUBLIC;
-
-GRANT EXECUTE ON FUNCTION "public"."pull_next_station_command"(text, text) TO "anon", "authenticated", "postgres", "service_role";
-
-GRANT EXECUTE ON FUNCTION "public"."rls_auto_enable"() TO PUBLIC, "anon", "authenticated", "postgres", "service_role";
-
-REVOKE ALL ON FUNCTION "public"."station_key_valid"(text, text) FROM PUBLIC;
-
-GRANT EXECUTE ON FUNCTION "public"."station_key_valid"(text, text) TO "anon", "authenticated", "postgres", "service_role";
-
-REVOKE ALL ON TABLE "public"."ai_assessments" FROM "authenticated";
-
-GRANT SELECT ON TABLE "public"."ai_assessments" TO "authenticated";
-
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."ai_assessments" TO "postgres", "service_role";
-
-REVOKE ALL ON TABLE "public"."command_requests" FROM "authenticated";
-
-GRANT INSERT, SELECT ON TABLE "public"."command_requests" TO "authenticated";
-
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."command_requests" TO "postgres", "service_role";
-
-REVOKE ALL ON TABLE "public"."command_results" FROM "authenticated";
-
-GRANT SELECT ON TABLE "public"."command_results" TO "authenticated";
-
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."command_results" TO "postgres", "service_role";
-
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."courses" TO "anon", "authenticated", "postgres", "service_role";
-
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."device_credentials" TO "postgres", "service_role";
-
-REVOKE ALL ON TABLE "public"."devices" FROM "authenticated";
-
-GRANT SELECT ON TABLE "public"."devices" TO "authenticated";
-
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."devices" TO "postgres", "service_role";
-
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."organizations" TO "anon", "authenticated", "postgres", "service_role";
-
-REVOKE ALL ON TABLE "public"."sensor_readings" FROM "authenticated";
-
-GRANT SELECT ON TABLE "public"."sensor_readings" TO "authenticated";
-
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."sensor_readings" TO "postgres", "service_role";
-
-REVOKE ALL ON TABLE "public"."sensors" FROM "authenticated";
-
-GRANT SELECT ON TABLE "public"."sensors" TO "authenticated";
-
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."sensors" TO "postgres", "service_role";
-
-REVOKE ALL ON TABLE "public"."station_access" FROM "authenticated";
-
-GRANT SELECT ON TABLE "public"."station_access" TO "authenticated";
-
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."station_access" TO "postgres", "service_role";
-
-REVOKE ALL ON TABLE "public"."station_events" FROM "authenticated";
-
-GRANT SELECT ON TABLE "public"."station_events" TO "authenticated";
-
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."station_events" TO "postgres", "service_role";
-
-REVOKE ALL ON TABLE "public"."station_state" FROM "authenticated";
-
-GRANT SELECT ON TABLE "public"."station_state" TO "authenticated";
-
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."station_state" TO "postgres", "service_role";
-
-ALTER TABLE "public"."command_requests"
-  ADD CONSTRAINT "command_requests_requested_by_fkey" FOREIGN KEY (requested_by) REFERENCES auth.users(id) ON DELETE RESTRICT;
-
-CREATE POLICY "command_requests_insert" ON "public"."command_requests"
-  FOR INSERT
-  TO "authenticated"
-  WITH CHECK (((requested_by = auth.uid()) AND public.has_station_command_access(device_id)));
-
+end;
+$$;
+
+revoke all on function public.ingest_station_packet(text, text, timestamptz, jsonb, jsonb) from public;
+revoke all on function public.pull_next_station_command(text, text) from public;
+revoke all on function public.complete_station_command(text, text, uuid, text, text, jsonb) from public;
+revoke all on function public.station_key_valid(text, text) from anon, authenticated;
+revoke all on function public.has_station_read_access(text) from anon, authenticated;
+revoke all on function public.has_station_command_access(text) from anon, authenticated;
+revoke all on function public.is_station_manager(text) from anon, authenticated;
+revoke all on function public.rls_auto_enable() from public, anon, authenticated;
+
+grant execute on function public.ingest_station_packet(text, text, timestamptz, jsonb, jsonb) to anon, authenticated;
+grant execute on function public.pull_next_station_command(text, text) to anon, authenticated;
+grant execute on function public.complete_station_command(text, text, uuid, text, text, jsonb) to anon, authenticated;
+
+-- -----------------------------------------------------------------------------
+-- Realtime publication
+-- -----------------------------------------------------------------------------
+
+do $$
+declare
+    table_name text;
+begin
+    foreach table_name in array array[
+        'sensor_readings',
+        'station_state',
+        'station_events',
+        'ai_assessments',
+        'command_requests',
+        'command_results'
+    ]
+    loop
+        if not exists (
+            select 1
+            from pg_publication_tables
+            where pubname = 'supabase_realtime'
+              and schemaname = 'public'
+              and tablename = table_name
+        ) then
+            execute format('alter publication supabase_realtime add table public.%I', table_name);
+        end if;
+    end loop;
+end
+$$;
+
+-- -----------------------------------------------------------------------------
+-- Demo stations. These keys are for local development only.
+-- Replace before using real hardware.
+-- -----------------------------------------------------------------------------
+
+insert into public.devices (device_id, display_name, device_type)
+values
+    ('station-001', 'Station 001', 'UNO Q'),
+    ('station-002', 'Station 002', 'UNO Q'),
+    ('station-003', 'Station 003', 'UNO Q'),
+    ('station-004', 'Station 004', 'UNO Q'),
+    ('station-005', 'Station 005', 'UNO Q'),
+    ('station-006', 'Station 006', 'UNO Q'),
+    ('station-007', 'Station 007', 'UNO Q'),
+    ('station-008', 'Station 008', 'UNO Q'),
+    ('station-009', 'Station 009', 'UNO Q'),
+    ('station-010', 'Station 010', 'UNO Q')
+on conflict (device_id)
+do update set
+    display_name = excluded.display_name,
+    device_type = excluded.device_type;
+
+insert into public.device_credentials (device_id, secret_hash)
+values
+    ('station-001', digest('demo-station-001-key', 'sha256')),
+    ('station-002', digest('demo-station-002-key', 'sha256')),
+    ('station-003', digest('demo-station-003-key', 'sha256')),
+    ('station-004', digest('demo-station-004-key', 'sha256')),
+    ('station-005', digest('demo-station-005-key', 'sha256')),
+    ('station-006', digest('demo-station-006-key', 'sha256')),
+    ('station-007', digest('demo-station-007-key', 'sha256')),
+    ('station-008', digest('demo-station-008-key', 'sha256')),
+    ('station-009', digest('demo-station-009-key', 'sha256')),
+    ('station-010', digest('demo-station-010-key', 'sha256'))
+on conflict (device_id)
+do update set secret_hash = excluded.secret_hash;

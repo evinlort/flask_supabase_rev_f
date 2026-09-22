@@ -555,7 +555,7 @@ begin
     set status = 'expired', completed_at = now()
     where device_id = p_device_id
       and status = 'pending'
-      and expires_at <= now();
+      and command_requests.expires_at <= now();
 
     return query
     with candidate as (
@@ -661,6 +661,11 @@ $$;
 revoke all on function public.ingest_station_packet(text, text, timestamptz, jsonb, jsonb) from public;
 revoke all on function public.pull_next_station_command(text, text) from public;
 revoke all on function public.complete_station_command(text, text, uuid, text, text, jsonb) from public;
+revoke all on function public.station_key_valid(text, text) from anon, authenticated;
+revoke all on function public.has_station_read_access(text) from anon, authenticated;
+revoke all on function public.has_station_command_access(text) from anon, authenticated;
+revoke all on function public.is_station_manager(text) from anon, authenticated;
+revoke all on function public.rls_auto_enable() from public, anon, authenticated;
 
 grant execute on function public.ingest_station_packet(text, text, timestamptz, jsonb, jsonb) to anon, authenticated;
 grant execute on function public.pull_next_station_command(text, text) to anon, authenticated;

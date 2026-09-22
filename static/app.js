@@ -1,3 +1,5 @@
+const I18N = window.I18N;
+
 let sb = null;
 let currentUser = null;
 let selectedDeviceId = null;
@@ -32,7 +34,7 @@ function formatTime(value) {
 }
 
 function setRealtimeStatus(text, connected = false) {
-    realtimeStatus.textContent = `Realtime: ${text}`;
+    realtimeStatus.textContent = `${I18N.realtime.prefix}: ${text}`;
     realtimeStatus.className = connected
         ? "status status-online"
         : "status status-offline";
@@ -68,7 +70,7 @@ async function loadDevices() {
     if (!data?.length) {
         const option = document.createElement("option");
         option.value = "";
-        option.textContent = "No authorized stations";
+        option.textContent = I18N.station.no_access;
         deviceSelect.appendChild(option);
         clearDashboardData();
         return;
@@ -98,8 +100,8 @@ async function loadAccess(deviceId) {
 
     currentAccess = data;
     accessBadge.textContent = data
-        ? `${data.role} • ${data.can_command ? "command enabled" : "read only"}`
-        : "no access row";
+        ? `${data.role} • ${data.can_command ? I18N.access.command_enabled : I18N.access.read_only}`
+        : I18N.access.no_access_row;
 
     document.querySelectorAll("[data-command]").forEach((button) => {
         button.disabled = !data?.can_command;
@@ -169,7 +171,7 @@ function updateSensorCard(reading) {
     card.querySelector(".sensor-value").textContent =
         `${reading.value} ${sensor.unit}`.trim();
     card.querySelector(".sensor-time").textContent = formatTime(reading.measured_at);
-    lastUpdate.textContent = `Updated ${formatTime(reading.measured_at)}`;
+    lastUpdate.textContent = I18N.telemetry.updated.replace("{time}", formatTime(reading.measured_at));
 }
 
 async function loadReadings(deviceId) {
@@ -186,8 +188,8 @@ async function loadReadings(deviceId) {
     sensorCards.innerHTML = "";
 
     if (!data?.length) {
-        readingsBody.innerHTML = '<tr><td colspan="4" class="empty">No measurements yet.</td></tr>';
-        lastUpdate.textContent = "No data";
+        readingsBody.innerHTML = `<tr><td colspan="4" class="empty">${I18N.readings.empty}</td></tr>`;
+        lastUpdate.textContent = I18N.telemetry.no_data;
         return;
     }
 
@@ -202,23 +204,24 @@ async function loadReadings(deviceId) {
 
 function renderState(state) {
     if (!state) {
-        stationState.innerHTML = '<div class="empty">No state yet.</div>';
+        stationState.innerHTML = `<div class="empty">${I18N.station_state.empty}</div>`;
         return;
     }
 
+    const s = I18N.station_state;
     const values = [
-        ["Safety", state.safety_ok ? "OK" : "BLOCKED", state.safety_ok],
-        ["VFD state", state.vfd_state ?? "unknown", state.vfd_state !== "fault"],
-        ["Frequency", state.vfd_frequency_hz == null ? "—" : `${state.vfd_frequency_hz} Hz`, true],
-        ["Motor", state.motor_running ? "running" : "stopped", true],
-        ["Speed", state.motor_speed_rpm == null ? "—" : `${Math.round(state.motor_speed_rpm)} rpm`, true],
-        ["Fault", state.fault_code ?? "none", !state.fault_code],
-        ["Updated", formatTime(state.updated_at), true],
+        [s.safety, state.safety_ok ? s.ok : s.blocked, state.safety_ok, true],
+        [s.vfd_state, state.vfd_state ?? s.unknown, state.vfd_state !== "fault", false],
+        [s.frequency, state.vfd_frequency_hz == null ? "—" : `${state.vfd_frequency_hz} Hz`, true, false],
+        [s.motor, state.motor_running ? s.running : s.stopped, true, false],
+        [s.speed, state.motor_speed_rpm == null ? "—" : `${Math.round(state.motor_speed_rpm)} rpm`, true, false],
+        [s.fault, state.fault_code ?? s.none, !state.fault_code, true],
+        [s.updated_label, formatTime(state.updated_at), true, false],
     ];
 
     stationState.innerHTML = "";
 
-    for (const [label, value, good] of values) {
+    for (const [label, value, good, isStatusRow] of values) {
         const item = document.createElement("div");
         item.className = "state-item";
         item.innerHTML = `
@@ -228,7 +231,7 @@ function renderState(state) {
         item.querySelector(".state-label").textContent = label;
         const valueNode = item.querySelector(".state-value");
         valueNode.textContent = value;
-        if (label === "Safety" || label === "Fault") {
+        if (isStatusRow) {
             valueNode.classList.add(good ? "state-good" : "state-bad");
         }
         stationState.appendChild(item);
@@ -273,7 +276,7 @@ async function loadEvents(deviceId) {
     eventsBody.innerHTML = "";
 
     if (!data?.length) {
-        eventsBody.innerHTML = '<tr><td colspan="4" class="empty">No events.</td></tr>';
+        eventsBody.innerHTML = `<tr><td colspan="4" class="empty">${I18N.events.empty}</td></tr>`;
         return;
     }
 
@@ -307,7 +310,7 @@ async function loadCommands(deviceId) {
     commandsBody.innerHTML = "";
 
     if (!data?.length) {
-        commandsBody.innerHTML = '<tr><td colspan="4" class="empty">No commands.</td></tr>';
+        commandsBody.innerHTML = `<tr><td colspan="4" class="empty">${I18N.commands_table.empty}</td></tr>`;
         return;
     }
 
@@ -317,7 +320,7 @@ async function loadCommands(deviceId) {
 function renderAiAssessment(item) {
     if (!item) {
         aiAssessment.className = "ai-box empty";
-        aiAssessment.textContent = "No AI assessment yet.";
+        aiAssessment.textContent = I18N.ai.empty;
         return;
     }
 
@@ -325,11 +328,11 @@ function renderAiAssessment(item) {
     aiAssessment.innerHTML = "";
 
     const rows = [
-        ["Diagnosis", item.diagnosis],
-        ["Recommendation", item.recommendation],
-        ["Explanation", item.explanation],
-        ["Model", item.model_version],
-        ["Created", formatTime(item.created_at)],
+        [I18N.ai.diagnosis, item.diagnosis],
+        [I18N.ai.recommendation, item.recommendation],
+        [I18N.ai.explanation, item.explanation],
+        [I18N.ai.model, item.model_version],
+        [I18N.ai.created, formatTime(item.created_at)],
     ];
 
     for (const [label, value] of rows) {
@@ -362,13 +365,13 @@ async function unsubscribeRealtime() {
         await sb.removeChannel(realtimeChannel);
     }
     realtimeChannel = null;
-    setRealtimeStatus("disconnected", false);
+    setRealtimeStatus(I18N.realtime.disconnected, false);
 }
 
 async function subscribeRealtime(deviceId) {
     await unsubscribeRealtime();
     realtimeReadingCount = 0;
-    readingCounter.textContent = "0 realtime readings";
+    readingCounter.textContent = I18N.readings.counter.replace("{n}", "0");
 
     realtimeChannel = sb
         .channel(`station-${deviceId}-${Date.now()}`)
@@ -390,7 +393,7 @@ async function subscribeRealtime(deviceId) {
                     readingsBody.lastElementChild.remove();
                 }
                 realtimeReadingCount += 1;
-                readingCounter.textContent = `${realtimeReadingCount} realtime readings`;
+                readingCounter.textContent = I18N.readings.counter.replace("{n}", realtimeReadingCount);
             }
         )
         .on(
@@ -442,7 +445,7 @@ async function subscribeRealtime(deviceId) {
         )
         .subscribe((status) => {
             if (status === "SUBSCRIBED") {
-                setRealtimeStatus("connected", true);
+                setRealtimeStatus(I18N.realtime.connected, true);
             } else {
                 setRealtimeStatus(status.toLowerCase(), false);
             }
@@ -451,10 +454,10 @@ async function subscribeRealtime(deviceId) {
 
 function clearDashboardData() {
     sensorCards.innerHTML = "";
-    stationState.innerHTML = '<div class="empty">No station selected.</div>';
-    readingsBody.innerHTML = '<tr><td colspan="4" class="empty">No station selected.</td></tr>';
-    eventsBody.innerHTML = '<tr><td colspan="4" class="empty">No station selected.</td></tr>';
-    commandsBody.innerHTML = '<tr><td colspan="4" class="empty">No station selected.</td></tr>';
+    stationState.innerHTML = `<div class="empty">${I18N.station_state.no_station_selected}</div>`;
+    readingsBody.innerHTML = `<tr><td colspan="4" class="empty">${I18N.readings.no_station_selected}</td></tr>`;
+    eventsBody.innerHTML = `<tr><td colspan="4" class="empty">${I18N.events.no_station_selected}</td></tr>`;
+    commandsBody.innerHTML = `<tr><td colspan="4" class="empty">${I18N.commands_table.no_station_selected}</td></tr>`;
     renderAiAssessment(null);
     accessBadge.textContent = "";
 }
@@ -470,7 +473,7 @@ async function selectDevice(deviceId) {
     selectedDeviceId = deviceId;
     deviceSelect.value = deviceId;
     commandMessage.textContent = "";
-    setRealtimeStatus("connecting...", false);
+    setRealtimeStatus(I18N.realtime.connecting, false);
 
     await loadAccess(deviceId);
     await loadSensors(deviceId);
@@ -492,7 +495,7 @@ async function sendCommand(commandType) {
     if (commandType === "set_frequency") {
         requestedValue = Number(frequencyValue.value);
         if (!Number.isFinite(requestedValue)) {
-            commandMessage.textContent = "Enter a valid frequency.";
+            commandMessage.textContent = I18N.command.invalid_frequency;
             return;
         }
     }
@@ -509,12 +512,11 @@ async function sendCommand(commandType) {
         });
 
     if (error) {
-        commandMessage.textContent = `Command rejected: ${error.message}`;
+        commandMessage.textContent = I18N.command.rejected.replace("{message}", error.message);
         return;
     }
 
-    commandMessage.textContent =
-        "Request stored in Supabase. Waiting for the station Safety Guardian to approve or block it.";
+    commandMessage.textContent = I18N.command.stored;
     await loadCommands(selectedDeviceId);
 }
 
@@ -580,7 +582,7 @@ deviceSelect.addEventListener("change", async (event) => {
         await selectDevice(event.target.value);
     } catch (error) {
         console.error(error);
-        setRealtimeStatus("error", false);
+        setRealtimeStatus(I18N.realtime.error, false);
     }
 });
 

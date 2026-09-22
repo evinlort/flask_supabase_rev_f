@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ lang }}" dir="{{ dir }}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,18 +11,21 @@
     <header class="topbar">
         <div>
             <h1>TLM Station Monitor</h1>
-            <p class="muted">Supabase • telemetry • commands • events • AI assessments</p>
+            <p class="muted">{{ t.brand_tagline }}</p>
         </div>
-        <div id="auth-summary" class="auth-summary"></div>
+        <div class="topbar-right">
+            <div id="auth-summary" class="auth-summary"></div>
+            <a class="lang-switch" href="{{ other_url }}">{{ t.lang_switch_label }}</a>
+        </div>
     </header>
 
     <section id="login-panel" class="panel auth-panel">
-        <h2>Sign in</h2>
-        <p class="muted">Only stations assigned to your user are returned by Supabase RLS.</p>
+        <h2>{{ t.login.heading }}</h2>
+        <p class="muted">{{ t.login.note }}</p>
         <form id="login-form" class="form-row">
-            <input id="email" type="email" placeholder="Email" autocomplete="username" required>
-            <input id="password" type="password" placeholder="Password" autocomplete="current-password" required>
-            <button type="submit">Sign in</button>
+            <input id="email" type="email" placeholder="{{ t.login.email_placeholder }}" autocomplete="username" required>
+            <input id="password" type="password" placeholder="{{ t.login.password_placeholder }}" autocomplete="current-password" required>
+            <button type="submit">{{ t.login.submit }}</button>
         </form>
         <div id="login-error" class="error"></div>
     </section>
@@ -30,77 +33,74 @@
     <section id="dashboard" class="hidden">
         <section class="panel toolbar">
             <div class="field">
-                <label for="device-select">Station</label>
+                <label for="device-select">{{ t.station.label }}</label>
                 <select id="device-select">
-                    <option value="">Loading stations...</option>
+                    <option value="">{{ t.station.loading }}</option>
                 </select>
             </div>
             <div id="access-badge" class="badge"></div>
-            <div id="realtime-status" class="status status-offline">Realtime: disconnected</div>
-            <button id="reload-button" type="button">Reload</button>
-            <button id="logout-button" type="button">Sign out</button>
+            <div id="realtime-status" class="status status-offline">{{ t.realtime.prefix }}: {{ t.realtime.disconnected }}</div>
+            <button id="reload-button" type="button">{{ t.topbar.reload }}</button>
+            <button id="logout-button" type="button">{{ t.topbar.logout }}</button>
         </section>
 
         <section class="grid two-col">
             <section class="panel">
                 <div class="section-title">
-                    <h2>Live telemetry</h2>
-                    <span id="last-update" class="muted">No data</span>
+                    <h2>{{ t.telemetry.heading }}</h2>
+                    <span id="last-update" class="muted">{{ t.telemetry.no_data }}</span>
                 </div>
                 <div id="sensor-cards" class="sensor-grid"></div>
             </section>
 
             <section class="panel">
-                <h2>Station state</h2>
+                <h2>{{ t.station_state.heading }}</h2>
                 <div id="station-state" class="state-grid">
-                    <div class="empty">No state yet.</div>
+                    <div class="empty">{{ t.station_state.empty }}</div>
                 </div>
             </section>
         </section>
 
         <section class="grid two-col">
             <section class="panel">
-                <h2>Command request</h2>
-                <p class="muted command-note">
-                    Supabase stores a request only. The station polls it, the local Safety Guardian validates it,
-                    and only then can the local MCU/VFD execute it.
-                </p>
+                <h2>{{ t.command.heading }}</h2>
+                <p class="muted command-note">{{ t.command.note }}</p>
                 <div id="command-controls" class="command-controls">
-                    <button data-command="start" type="button">Start</button>
-                    <button data-command="stop" type="button">Stop</button>
+                    <button data-command="start" type="button">{{ t.command.start }}</button>
+                    <button data-command="stop" type="button">{{ t.command.stop }}</button>
                     <div class="inline-control">
                         <input id="frequency-value" type="number" min="0" max="50" step="0.1" value="25">
-                        <button data-command="set_frequency" type="button">Set frequency (Hz)</button>
+                        <button data-command="set_frequency" type="button">{{ t.command.set_frequency }}</button>
                     </div>
-                    <button data-command="reset_fault" type="button">Reset VFD fault</button>
+                    <button data-command="reset_fault" type="button">{{ t.command.reset_fault }}</button>
                 </div>
                 <div id="command-message" class="message"></div>
             </section>
 
             <section class="panel">
-                <h2>Latest AI assessment</h2>
-                <div id="ai-assessment" class="ai-box empty">No AI assessment yet.</div>
+                <h2>{{ t.ai.heading }}</h2>
+                <div id="ai-assessment" class="ai-box empty">{{ t.ai.empty }}</div>
             </section>
         </section>
 
         <section class="grid two-col">
             <section class="panel">
                 <div class="section-title">
-                    <h2>Events & faults</h2>
-                    <span class="muted">latest 20</span>
+                    <h2>{{ t.events.heading }}</h2>
+                    <span class="muted">{{ t.events.latest }}</span>
                 </div>
                 <div class="table-wrapper">
                     <table>
                         <thead>
                         <tr>
-                            <th>Time</th>
-                            <th>Type</th>
-                            <th>Severity</th>
-                            <th>Message</th>
+                            <th>{{ t.events.time }}</th>
+                            <th>{{ t.events.type }}</th>
+                            <th>{{ t.events.severity }}</th>
+                            <th>{{ t.events.message }}</th>
                         </tr>
                         </thead>
                         <tbody id="events-body">
-                        <tr><td colspan="4" class="empty">No events.</td></tr>
+                        <tr><td colspan="4" class="empty">{{ t.events.empty }}</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -108,21 +108,21 @@
 
             <section class="panel">
                 <div class="section-title">
-                    <h2>Command status</h2>
-                    <span class="muted">latest 20</span>
+                    <h2>{{ t.commands_table.heading }}</h2>
+                    <span class="muted">{{ t.commands_table.latest }}</span>
                 </div>
                 <div class="table-wrapper">
                     <table>
                         <thead>
                         <tr>
-                            <th>Requested</th>
-                            <th>Command</th>
-                            <th>Value</th>
-                            <th>Status</th>
+                            <th>{{ t.commands_table.requested }}</th>
+                            <th>{{ t.commands_table.command }}</th>
+                            <th>{{ t.commands_table.value }}</th>
+                            <th>{{ t.commands_table.status }}</th>
                         </tr>
                         </thead>
                         <tbody id="commands-body">
-                        <tr><td colspan="4" class="empty">No commands.</td></tr>
+                        <tr><td colspan="4" class="empty">{{ t.commands_table.empty }}</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -131,21 +131,21 @@
 
         <section class="panel">
             <div class="section-title">
-                <h2>Recent measurements</h2>
-                <span id="reading-counter" class="muted">0 realtime readings</span>
+                <h2>{{ t.readings.heading }}</h2>
+                <span id="reading-counter" class="muted">{{ t.readings.counter.replace("{n}", "0") }}</span>
             </div>
             <div class="table-wrapper">
                 <table>
                     <thead>
                     <tr>
-                        <th>Time</th>
-                        <th>Sensor</th>
-                        <th>Value</th>
-                        <th>Unit</th>
+                        <th>{{ t.readings.time }}</th>
+                        <th>{{ t.readings.sensor }}</th>
+                        <th>{{ t.readings.value }}</th>
+                        <th>{{ t.readings.unit }}</th>
                     </tr>
                     </thead>
                     <tbody id="readings-body">
-                    <tr><td colspan="4" class="empty">Select a station.</td></tr>
+                    <tr><td colspan="4" class="empty">{{ t.readings.select_station }}</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -153,6 +153,9 @@
     </section>
 </main>
 
+<script>
+    window.I18N = {{ t | tojson }};
+</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

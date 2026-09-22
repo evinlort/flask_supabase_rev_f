@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TLM Station Monitor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+<main class="container">
+    <header class="topbar">
+        <div>
+            <h1>TLM Station Monitor</h1>
+            <p class="muted">Supabase • telemetry • commands • events • AI assessments</p>
+        </div>
+        <div id="auth-summary" class="auth-summary"></div>
+    </header>
+
+    <section id="login-panel" class="panel auth-panel">
+        <h2>Sign in</h2>
+        <p class="muted">Only stations assigned to your user are returned by Supabase RLS.</p>
+        <form id="login-form" class="form-row">
+            <input id="email" type="email" placeholder="Email" autocomplete="username" required>
+            <input id="password" type="password" placeholder="Password" autocomplete="current-password" required>
+            <button type="submit">Sign in</button>
+        </form>
+        <div id="login-error" class="error"></div>
+    </section>
+
+    <section id="dashboard" class="hidden">
+        <section class="panel toolbar">
+            <div class="field">
+                <label for="device-select">Station</label>
+                <select id="device-select">
+                    <option value="">Loading stations...</option>
+                </select>
+            </div>
+            <div id="access-badge" class="badge"></div>
+            <div id="realtime-status" class="status status-offline">Realtime: disconnected</div>
+            <button id="reload-button" type="button">Reload</button>
+            <button id="logout-button" type="button">Sign out</button>
+        </section>
+
+        <section class="grid two-col">
+            <section class="panel">
+                <div class="section-title">
+                    <h2>Live telemetry</h2>
+                    <span id="last-update" class="muted">No data</span>
+                </div>
+                <div id="sensor-cards" class="sensor-grid"></div>
+            </section>
+
+            <section class="panel">
+                <h2>Station state</h2>
+                <div id="station-state" class="state-grid">
+                    <div class="empty">No state yet.</div>
+                </div>
+            </section>
+        </section>
+
+        <section class="grid two-col">
+            <section class="panel">
+                <h2>Command request</h2>
+                <p class="muted command-note">
+                    Supabase stores a request only. The station polls it, the local Safety Guardian validates it,
+                    and only then can the local MCU/VFD execute it.
+                </p>
+                <div id="command-controls" class="command-controls">
+                    <button data-command="start" type="button">Start</button>
+                    <button data-command="stop" type="button">Stop</button>
+                    <div class="inline-control">
+                        <input id="frequency-value" type="number" min="0" max="50" step="0.1" value="25">
+                        <button data-command="set_frequency" type="button">Set frequency (Hz)</button>
+                    </div>
+                    <button data-command="reset_fault" type="button">Reset VFD fault</button>
+                </div>
+                <div id="command-message" class="message"></div>
+            </section>
+
+            <section class="panel">
+                <h2>Latest AI assessment</h2>
+                <div id="ai-assessment" class="ai-box empty">No AI assessment yet.</div>
+            </section>
+        </section>
+
+        <section class="grid two-col">
+            <section class="panel">
+                <div class="section-title">
+                    <h2>Events & faults</h2>
+                    <span class="muted">latest 20</span>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Type</th>
+                            <th>Severity</th>
+                            <th>Message</th>
+                        </tr>
+                        </thead>
+                        <tbody id="events-body">
+                        <tr><td colspan="4" class="empty">No events.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="section-title">
+                    <h2>Command status</h2>
+                    <span class="muted">latest 20</span>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>Requested</th>
+                            <th>Command</th>
+                            <th>Value</th>
+                            <th>Status</th>
+                        </tr>
+                        </thead>
+                        <tbody id="commands-body">
+                        <tr><td colspan="4" class="empty">No commands.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </section>
+
+        <section class="panel">
+            <div class="section-title">
+                <h2>Recent measurements</h2>
+                <span id="reading-counter" class="muted">0 realtime readings</span>
+            </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Sensor</th>
+                        <th>Value</th>
+                        <th>Unit</th>
+                    </tr>
+                    </thead>
+                    <tbody id="readings-body">
+                    <tr><td colspan="4" class="empty">Select a station.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

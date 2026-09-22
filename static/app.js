@@ -1,0 +1,601 @@
+let sb = null;
+let currentUser = null;
+let selectedDeviceId = null;
+let currentAccess = null;
+let sensorsById = new Map();
+let realtimeChannel = null;
+let realtimeReadingCount = 0;
+
+const loginPanel = document.getElementById("login-panel");
+const loginForm = document.getElementById("login-form");
+const loginError = document.getElementById("login-error");
+const dashboard = document.getElementById("dashboard");
+const authSummary = document.getElementById("auth-summary");
+const logoutButton = document.getElementById("logout-button");
+const reloadButton = document.getElementById("reload-button");
+const deviceSelect = document.getElementById("device-select");
+const accessBadge = document.getElementById("access-badge");
+const realtimeStatus = document.getElementById("realtime-status");
+const sensorCards = document.getElementById("sensor-cards");
+const stationState = document.getElementById("station-state");
+const readingsBody = document.getElementById("readings-body");
+const eventsBody = document.getElementById("events-body");
+const commandsBody = document.getElementById("commands-body");
+const aiAssessment = document.getElementById("ai-assessment");
+const commandMessage = document.getElementById("command-message");
+const lastUpdate = document.getElementById("last-update");
+const readingCounter = document.getElementById("reading-counter");
+const frequencyValue = document.getElementById("frequency-value");
+
+function formatTime(value) {
+    return value ? new Date(value).toLocaleString() : "—";
+}
+
+function setRealtimeStatus(text, connected = false) {
+    realtimeStatus.textContent = `Realtime: ${text}`;
+    realtimeStatus.className = connected
+        ? "status status-online"
+        : "status status-offline";
+}
+
+function showSignedOut() {
+    currentUser = null;
+    selectedDeviceId = null;
+    dashboard.classList.add("hidden");
+    loginPanel.classList.remove("hidden");
+    authSummary.textContent = "";
+}
+
+async function showSignedIn(user) {
+    currentUser = user;
+    loginPanel.classList.add("hidden");
+    dashboard.classList.remove("hidden");
+    authSummary.textContent = user.email ?? user.id;
+    await loadDevices();
+}
+
+async function loadDevices() {
+    const { data, error } = await sb
+        .from("devices")
+        .select("device_id,display_name,device_type,last_seen_at")
+        .eq("enabled", true)
+        .order("device_id");
+
+    if (error) throw error;
+
+    deviceSelect.innerHTML = "";
+
+    if (!data?.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "No authorized stations";
+        deviceSelect.appendChild(option);
+        clearDashboardData();
+        return;
+    }
+
+    for (const device of data) {
+        const option = document.createElement("option");
+        option.value = device.device_id;
+        option.textContent = device.display_name
+            ? `${device.display_name} (${device.device_id})`
+            : device.device_id;
+        deviceSelect.appendChild(option);
+    }
+
+    await selectDevice(data[0].device_id);
+}
+
+async function loadAccess(deviceId) {
+    const { data, error } = await sb
+        .from("station_access")
+        .select("role,can_read,can_command")
+        .eq("device_id", deviceId)
+        .eq("user_id", currentUser.id)
+        .maybeSingle();
+
+    if (error) throw error;
+
+    currentAccess = data;
+    accessBadge.textContent = data
+        ? `${data.role} • ${data.can_command ? "command enabled" : "read only"}`
+        : "no access row";
+
+    document.querySelectorAll("[data-command]").forEach((button) => {
+        button.disabled = !data?.can_command;
+    });
+}
+
+async function loadSensors(deviceId) {
+    const { data, error } = await sb
+        .from("sensors")
+        .select("id,name,unit")
+        .eq("device_id", deviceId)
+        .order("name");
+
+    if (error) throw error;
+
+    sensorsById = new Map(
+        (data ?? []).map((sensor) => [
+            String(sensor.id),
+            { name: sensor.name, unit: sensor.unit ?? "" },
+        ])
+    );
+}
+
+function sensorInfo(sensorId) {
+    return sensorsById.get(String(sensorId)) ?? {
+        name: `sensor-${sensorId}`,
+        unit: "",
+    };
+}
+
+function createReadingRow(reading) {
+    const sensor = sensorInfo(reading.sensor_id);
+    const row = document.createElement("tr");
+    row.dataset.readingId = reading.id;
+
+    for (const value of [
+        formatTime(reading.measured_at),
+        sensor.name,
+        reading.value,
+        sensor.unit,
+    ]) {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        row.appendChild(cell);
+    }
+
+    return row;
+}
+
+function updateSensorCard(reading) {
+    const sensor = sensorInfo(reading.sensor_id);
+    let card = document.getElementById(`sensor-card-${reading.sensor_id}`);
+
+    if (!card) {
+        card = document.createElement("article");
+        card.id = `sensor-card-${reading.sensor_id}`;
+        card.className = "sensor-card";
+        card.innerHTML = `
+            <div class="sensor-name"></div>
+            <div class="sensor-value"></div>
+            <div class="sensor-time muted"></div>
+        `;
+        sensorCards.appendChild(card);
+    }
+
+    card.querySelector(".sensor-name").textContent = sensor.name;
+    card.querySelector(".sensor-value").textContent =
+        `${reading.value} ${sensor.unit}`.trim();
+    card.querySelector(".sensor-time").textContent = formatTime(reading.measured_at);
+    lastUpdate.textContent = `Updated ${formatTime(reading.measured_at)}`;
+}
+
+async function loadReadings(deviceId) {
+    const { data, error } = await sb
+        .from("sensor_readings")
+        .select("id,device_id,sensor_id,value,measured_at")
+        .eq("device_id", deviceId)
+        .order("measured_at", { ascending: false })
+        .limit(200);
+
+    if (error) throw error;
+
+    readingsBody.innerHTML = "";
+    sensorCards.innerHTML = "";
+
+    if (!data?.length) {
+        readingsBody.innerHTML = '<tr><td colspan="4" class="empty">No measurements yet.</td></tr>';
+        lastUpdate.textContent = "No data";
+        return;
+    }
+
+    for (const reading of data) {
+        readingsBody.appendChild(createReadingRow(reading));
+    }
+
+    for (const reading of [...data].reverse()) {
+        updateSensorCard(reading);
+    }
+}
+
+function renderState(state) {
+    if (!state) {
+        stationState.innerHTML = '<div class="empty">No state yet.</div>';
+        return;
+    }
+
+    const values = [
+        ["Safety", state.safety_ok ? "OK" : "BLOCKED", state.safety_ok],
+        ["VFD state", state.vfd_state ?? "unknown", state.vfd_state !== "fault"],
+        ["Frequency", state.vfd_frequency_hz == null ? "—" : `${state.vfd_frequency_hz} Hz`, true],
+        ["Motor", state.motor_running ? "running" : "stopped", true],
+        ["Speed", state.motor_speed_rpm == null ? "—" : `${Math.round(state.motor_speed_rpm)} rpm`, true],
+        ["Fault", state.fault_code ?? "none", !state.fault_code],
+        ["Updated", formatTime(state.updated_at), true],
+    ];
+
+    stationState.innerHTML = "";
+
+    for (const [label, value, good] of values) {
+        const item = document.createElement("div");
+        item.className = "state-item";
+        item.innerHTML = `
+            <div class="state-label"></div>
+            <div class="state-value"></div>
+        `;
+        item.querySelector(".state-label").textContent = label;
+        const valueNode = item.querySelector(".state-value");
+        valueNode.textContent = value;
+        if (label === "Safety" || label === "Fault") {
+            valueNode.classList.add(good ? "state-good" : "state-bad");
+        }
+        stationState.appendChild(item);
+    }
+}
+
+async function loadState(deviceId) {
+    const { data, error } = await sb
+        .from("station_state")
+        .select("*")
+        .eq("device_id", deviceId)
+        .maybeSingle();
+
+    if (error) throw error;
+    renderState(data);
+}
+
+function createEventRow(event) {
+    const row = document.createElement("tr");
+    for (const value of [
+        formatTime(event.happened_at),
+        event.event_type,
+        event.severity,
+        event.message,
+    ]) {
+        const cell = document.createElement("td");
+        cell.textContent = value ?? "";
+        row.appendChild(cell);
+    }
+    return row;
+}
+
+async function loadEvents(deviceId) {
+    const { data, error } = await sb
+        .from("station_events")
+        .select("id,event_type,severity,message,happened_at")
+        .eq("device_id", deviceId)
+        .order("happened_at", { ascending: false })
+        .limit(20);
+
+    if (error) throw error;
+    eventsBody.innerHTML = "";
+
+    if (!data?.length) {
+        eventsBody.innerHTML = '<tr><td colspan="4" class="empty">No events.</td></tr>';
+        return;
+    }
+
+    data.forEach((event) => eventsBody.appendChild(createEventRow(event)));
+}
+
+function createCommandRow(command) {
+    const row = document.createElement("tr");
+    for (const value of [
+        formatTime(command.requested_at),
+        command.command_type,
+        command.requested_value ?? "—",
+        command.status,
+    ]) {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        row.appendChild(cell);
+    }
+    return row;
+}
+
+async function loadCommands(deviceId) {
+    const { data, error } = await sb
+        .from("command_requests")
+        .select("id,command_type,requested_value,requested_at,status,expires_at")
+        .eq("device_id", deviceId)
+        .order("requested_at", { ascending: false })
+        .limit(20);
+
+    if (error) throw error;
+    commandsBody.innerHTML = "";
+
+    if (!data?.length) {
+        commandsBody.innerHTML = '<tr><td colspan="4" class="empty">No commands.</td></tr>';
+        return;
+    }
+
+    data.forEach((command) => commandsBody.appendChild(createCommandRow(command)));
+}
+
+function renderAiAssessment(item) {
+    if (!item) {
+        aiAssessment.className = "ai-box empty";
+        aiAssessment.textContent = "No AI assessment yet.";
+        return;
+    }
+
+    aiAssessment.className = "ai-box";
+    aiAssessment.innerHTML = "";
+
+    const rows = [
+        ["Diagnosis", item.diagnosis],
+        ["Recommendation", item.recommendation],
+        ["Explanation", item.explanation],
+        ["Model", item.model_version],
+        ["Created", formatTime(item.created_at)],
+    ];
+
+    for (const [label, value] of rows) {
+        const div = document.createElement("div");
+        div.className = "ai-row";
+        const labelNode = document.createElement("span");
+        labelNode.className = "ai-label";
+        labelNode.textContent = `${label}: `;
+        div.appendChild(labelNode);
+        div.appendChild(document.createTextNode(value ?? "—"));
+        aiAssessment.appendChild(div);
+    }
+}
+
+async function loadAiAssessment(deviceId) {
+    const { data, error } = await sb
+        .from("ai_assessments")
+        .select("diagnosis,recommendation,explanation,model_version,created_at")
+        .eq("device_id", deviceId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+    if (error) throw error;
+    renderAiAssessment(data);
+}
+
+async function unsubscribeRealtime() {
+    if (realtimeChannel && sb) {
+        await sb.removeChannel(realtimeChannel);
+    }
+    realtimeChannel = null;
+    setRealtimeStatus("disconnected", false);
+}
+
+async function subscribeRealtime(deviceId) {
+    await unsubscribeRealtime();
+    realtimeReadingCount = 0;
+    readingCounter.textContent = "0 realtime readings";
+
+    realtimeChannel = sb
+        .channel(`station-${deviceId}-${Date.now()}`)
+        .on(
+            "postgres_changes",
+            {
+                event: "INSERT",
+                schema: "public",
+                table: "sensor_readings",
+                filter: `device_id=eq.${deviceId}`,
+            },
+            (payload) => {
+                if (payload.new.device_id !== selectedDeviceId) return;
+                const empty = readingsBody.querySelector(".empty");
+                if (empty) readingsBody.innerHTML = "";
+                readingsBody.prepend(createReadingRow(payload.new));
+                updateSensorCard(payload.new);
+                while (readingsBody.children.length > 200) {
+                    readingsBody.lastElementChild.remove();
+                }
+                realtimeReadingCount += 1;
+                readingCounter.textContent = `${realtimeReadingCount} realtime readings`;
+            }
+        )
+        .on(
+            "postgres_changes",
+            {
+                event: "*",
+                schema: "public",
+                table: "station_state",
+                filter: `device_id=eq.${deviceId}`,
+            },
+            (payload) => renderState(payload.new)
+        )
+        .on(
+            "postgres_changes",
+            {
+                event: "INSERT",
+                schema: "public",
+                table: "station_events",
+                filter: `device_id=eq.${deviceId}`,
+            },
+            (payload) => {
+                const empty = eventsBody.querySelector(".empty");
+                if (empty) eventsBody.innerHTML = "";
+                eventsBody.prepend(createEventRow(payload.new));
+                while (eventsBody.children.length > 20) {
+                    eventsBody.lastElementChild.remove();
+                }
+            }
+        )
+        .on(
+            "postgres_changes",
+            {
+                event: "INSERT",
+                schema: "public",
+                table: "ai_assessments",
+                filter: `device_id=eq.${deviceId}`,
+            },
+            (payload) => renderAiAssessment(payload.new)
+        )
+        .on(
+            "postgres_changes",
+            {
+                event: "*",
+                schema: "public",
+                table: "command_requests",
+                filter: `device_id=eq.${deviceId}`,
+            },
+            () => loadCommands(deviceId).catch(console.error)
+        )
+        .subscribe((status) => {
+            if (status === "SUBSCRIBED") {
+                setRealtimeStatus("connected", true);
+            } else {
+                setRealtimeStatus(status.toLowerCase(), false);
+            }
+        });
+}
+
+function clearDashboardData() {
+    sensorCards.innerHTML = "";
+    stationState.innerHTML = '<div class="empty">No station selected.</div>';
+    readingsBody.innerHTML = '<tr><td colspan="4" class="empty">No station selected.</td></tr>';
+    eventsBody.innerHTML = '<tr><td colspan="4" class="empty">No station selected.</td></tr>';
+    commandsBody.innerHTML = '<tr><td colspan="4" class="empty">No station selected.</td></tr>';
+    renderAiAssessment(null);
+    accessBadge.textContent = "";
+}
+
+async function selectDevice(deviceId) {
+    if (!deviceId) {
+        selectedDeviceId = null;
+        await unsubscribeRealtime();
+        clearDashboardData();
+        return;
+    }
+
+    selectedDeviceId = deviceId;
+    deviceSelect.value = deviceId;
+    commandMessage.textContent = "";
+    setRealtimeStatus("connecting...", false);
+
+    await loadAccess(deviceId);
+    await loadSensors(deviceId);
+    await subscribeRealtime(deviceId);
+
+    await Promise.all([
+        loadReadings(deviceId),
+        loadState(deviceId),
+        loadEvents(deviceId),
+        loadCommands(deviceId),
+        loadAiAssessment(deviceId),
+    ]);
+}
+
+async function sendCommand(commandType) {
+    if (!selectedDeviceId || !currentAccess?.can_command) return;
+
+    let requestedValue = null;
+    if (commandType === "set_frequency") {
+        requestedValue = Number(frequencyValue.value);
+        if (!Number.isFinite(requestedValue)) {
+            commandMessage.textContent = "Enter a valid frequency.";
+            return;
+        }
+    }
+
+    const expiresAt = new Date(Date.now() + 30_000).toISOString();
+
+    const { error } = await sb
+        .from("command_requests")
+        .insert({
+            device_id: selectedDeviceId,
+            command_type: commandType,
+            requested_value: requestedValue,
+            expires_at: expiresAt,
+        });
+
+    if (error) {
+        commandMessage.textContent = `Command rejected: ${error.message}`;
+        return;
+    }
+
+    commandMessage.textContent =
+        "Request stored in Supabase. Waiting for the station Safety Guardian to approve or block it.";
+    await loadCommands(selectedDeviceId);
+}
+
+async function reloadSelectedDevice() {
+    if (!selectedDeviceId) return;
+    await loadAccess(selectedDeviceId);
+    await loadSensors(selectedDeviceId);
+    await Promise.all([
+        loadReadings(selectedDeviceId),
+        loadState(selectedDeviceId),
+        loadEvents(selectedDeviceId),
+        loadCommands(selectedDeviceId),
+        loadAiAssessment(selectedDeviceId),
+    ]);
+}
+
+async function init() {
+    try {
+        const response = await fetch("/api/config");
+        if (!response.ok) throw new Error("Failed to load Flask config");
+        const config = await response.json();
+
+        sb = window.supabase.createClient(config.supabaseUrl, config.supabaseKey);
+
+        const { data: { session } } = await sb.auth.getSession();
+        if (session?.user) {
+            await showSignedIn(session.user);
+        } else {
+            showSignedOut();
+        }
+
+        sb.auth.onAuthStateChange(async (_event, session) => {
+            if (session?.user) {
+                await showSignedIn(session.user);
+            } else {
+                await unsubscribeRealtime();
+                showSignedOut();
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        loginError.textContent = error.message;
+    }
+}
+
+loginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    loginError.textContent = "";
+
+    const email = document.getElementById("email").value.trim();
+    const password = document.getElementById("password").value;
+
+    const { error } = await sb.auth.signInWithPassword({ email, password });
+    if (error) loginError.textContent = error.message;
+});
+
+logoutButton.addEventListener("click", async () => {
+    await sb.auth.signOut();
+});
+
+deviceSelect.addEventListener("change", async (event) => {
+    try {
+        await selectDevice(event.target.value);
+    } catch (error) {
+        console.error(error);
+        setRealtimeStatus("error", false);
+    }
+});
+
+reloadButton.addEventListener("click", () => {
+    reloadSelectedDevice().catch(console.error);
+});
+
+document.querySelectorAll("[data-command]").forEach((button) => {
+    button.addEventListener("click", () => {
+        sendCommand(button.dataset.command).catch(console.error);
+    });
+});
+
+window.addEventListener("beforeunload", () => {
+    if (realtimeChannel && sb) sb.removeChannel(realtimeChannel);
+});
+
+init();

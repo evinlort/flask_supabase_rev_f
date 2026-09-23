@@ -16,8 +16,11 @@ const char* DEVICE_KEY = "demo-station-011-key";
 
 const int TRIG_PIN = 5;
 const int ECHO_PIN = 18;
-const unsigned long MEASUREMENT_INTERVAL_MS = 10000;
+const unsigned long MEASUREMENT_INTERVAL_MS = 1000;
+const size_t BATCH_SIZE = 10;
 
+float distanceBatch[BATCH_SIZE];
+size_t distanceBatchCount = 0;
 unsigned long lastMeasurementAt = 0;
 
 void connectWiFi() {
@@ -95,7 +98,7 @@ float readDistanceCm() {
   return duration * 0.0343f / 2.0f;
 }
 
-bool sendDistanceToSupabase(float distanceCm) {
+bool sendDistanceBatchToSupabase(const float* distances, size_t count) {
   if (WiFi.status() != WL_CONNECTED) {
     connectWiFi();
   }
@@ -110,17 +113,20 @@ bool sendDistanceToSupabase(float distanceCm) {
     return false;
   }
 
-  StaticJsonDocument<1024> request;
+  StaticJsonDocument<3072> request;
   request["p_device_id"] = DEVICE_ID;
   request["p_device_key"] = DEVICE_KEY;
   request["p_measured_at"] = measuredAt;
 
   JsonArray telemetry = request.createNestedArray("p_telemetry");
-  JsonObject distanceReading = telemetry.createNestedObject();
-  distanceReading["name"] = "distance";
-  distanceReading["unit"] = "cm";
-  distanceReading["category"] = "condition";
-  distanceReading["value"] = distanceCm;
+
+  for (size_t index = 0; index < count; index++) {
+    JsonObject distanceReading = telemetry.createNestedObject();
+    distanceReading["name"] = "distance";
+    distanceReading["unit"] = "cm";
+    distanceReading["category"] = "condition";
+    distanceReading["value"] = distances[index];
+  }
 
   JsonObject state = request.createNestedObject("p_state");
   state["safety_ok"] = true;
@@ -147,6 +153,9 @@ bool sendDistanceToSupabase(float distanceCm) {
   const int statusCode = http.POST(body);
   const String response = http.getString();
 
+  Serial.print("Sent batch of ");
+  Serial.print(count);
+  Serial.println(" readings");
   Serial.print("HTTP status: ");
   Serial.println(statusCode);
   Serial.print("Response: ");
@@ -166,6 +175,8 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     syncTime();
   }
+
+  lastMeasurementAt = millis();
 }
 
 void loop() {
@@ -182,7 +193,18 @@ void loop() {
   Serial.println(" cm");
 
   if (distanceCm >= 0) {
-    sendDistanceToSupabase(distanceCm);
+    distanceBatch[distanceBatchCount] = distanceCm;
+    distanceBatchCount++;
+
+    Serial.print("Batch: ");
+    Serial.print(distanceBatchCount);
+    Serial.print("/");
+    Serial.println(BATCH_SIZE);
+
+    if (distanceBatchCount == BATCH_SIZE) {
+      sendDistanceBatchToSupabase(distanceBatch, distanceBatchCount);
+      distanceBatchCount = 0;
+    }
   } else {
     Serial.println("Sensor timeout; packet was not sent");
   }
